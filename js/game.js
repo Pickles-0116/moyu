@@ -106,6 +106,17 @@ class GameEngine {
       // v2.3 燃烧精血 & 游戏结束
       burnBlood: { totalBurned: 0, totalSilverGained: 0 },
       gameOver: false,
+      // v2.4 聚宝阁（拍卖）
+      auction: {
+        unlocked: false,
+        items: [],
+        lastRefreshStep: 0,
+        forceRefreshUsedToday: 0,
+        forceRefreshDate: '',
+        heishiTokensBoughtThisRound: 0,
+        collections: [],
+        stoneCollections: [],
+      },
       // 货物库存 (囤货)
       commodities: {},
       // 传闻
@@ -192,20 +203,27 @@ class GameEngine {
       if (resource === 'silver' && amount > 0) {
         this.state.meta.totalSilverEarned += amount;
       }
-      if (resource === 'stamina' && this.state.resources.stamina <= 0 && this.state.journey.active) {
-        // 检查化险符
-        if (this.hasItemEquipped('huaxianfu')) {
-          this.removeItem('huaxianfu', 1);
-          this.state.resources.stamina = 1;
-          this.addLog('🌀 化险符生效！体力归零时保留1点继续商途！', 'success');
-        } else {
-          this.state.resources.stamina = 0;
-          this.endRound('stamina');
+      if (resource === 'stamina' && this.state.resources.stamina <= 0) {
+        // v2.4: 免死金牌 — 防止惩罚性倒退
+        if (this.checkPunitiveSetbackImmunity()) {
+          // stamina already restored by the check
+        } else if (this.state.journey.active) {
+          // 检查化险符
+          if (this.hasItemEquipped('huaxianfu')) {
+            this.removeItem('huaxianfu', 1);
+            this.state.resources.stamina = 1;
+            this.addLog('🌀 化险符生效！体力归零时保留1点继续商途！', 'success');
+          } else {
+            this.state.resources.stamina = 0;
+            this.endRound('stamina');
+          }
         }
       }
       this.emit('resourceChange', { resource, amount, newValue: this.state.resources[resource] });
       // v2.2: 声望里程碑检查
       if (resource === 'reputation' && amount > 0) this.checkMilestone();
+      // v2.4: 聚宝阁解锁检查
+      if (resource === 'reputation' && amount > 0) this.checkAuctionUnlock();
       // 资源变化时检查店铺解锁（商途值/银两达标即可解锁）
       if ((resource === 'shangtu' || resource === 'silver') && amount > 0) this.checkShopUnlocks();
       this.checkAchievements();
@@ -655,6 +673,10 @@ class GameEngine {
     output = Math.floor(output * this.getActivityMultiplier());
     // v2.3: 商机闪现×2
     if (this.state.activity.businessFlashActive) output = Math.floor(output * GAME_CONFIG.businessFlashMultiplier);
+    // v2.4: 和田羊脂白玉 +3% 产出
+    if (this.state.auction.stoneCollections.includes('jade_muttonFat')) {
+      output = Math.floor(output * 1.03);
+    }
     return Math.floor(output);
   }
   getTotalShopOutput() {
@@ -1099,6 +1121,17 @@ class GameEngine {
     this.state.shopSelling = { totalSellCount: 0, shopCooldowns: {} }; // 重置变卖
     this.state.burnBlood = { totalBurned: 0, totalSilverGained: 0 }; // 重置燃烧精血
     this.state.gameOver = false; // 解除游戏结束
+    // v2.4 重置拍卖（收藏品清零，保护道具保留在背包中）
+    this.state.auction = {
+      unlocked: false,
+      items: [],
+      lastRefreshStep: 0,
+      forceRefreshUsedToday: 0,
+      forceRefreshDate: '',
+      heishiTokensBoughtThisRound: 0,
+      collections: [],
+      stoneCollections: [],
+    };
     this.applyPermanentUpgrades();
     const legacyPct = Math.floor(this.state.prestige.legacy * GAME_CONFIG.legacyPerReputation * 100);
     this.addLog(`🔥 声望重置成功！第${this.state.prestige.count}次重置，传承点${this.state.prestige.legacy}，产出+${legacyPct}%！`, 'success');
@@ -1139,6 +1172,13 @@ class GameEngine {
     if (!this.state.heishi.lastRefreshStep || (totalSteps - this.state.heishi.lastRefreshStep) >= heishiStepsNeeded) {
       this.refreshHeishi();
     }
+    // v2.4 聚宝阁刷新
+    if (this.state.auction.unlocked) {
+      const auctionStepsNeeded = getAuctionRefreshSteps(this.state.resources.reputation);
+      if (!this.state.auction.lastRefreshStep || (totalSteps - this.state.auction.lastRefreshStep) >= auctionStepsNeeded) {
+        this.refreshAuctionItems();
+      }
+    }
   }
 
   checkDailyRefresh() {
@@ -1150,6 +1190,11 @@ class GameEngine {
     }
     // v2.2 步数驱动刷新（初始化时也检查一次）
     this.checkStepRefresh();
+    // v2.4 拍卖强制刷新每日重置
+    if (this.state.auction.forceRefreshDate !== today) {
+      this.state.auction.forceRefreshUsedToday = 0;
+      this.state.auction.forceRefreshDate = today;
+    }
     // v2.1 每日重置
     if (this.state.daily.dufangDate !== today) {
       this.state.daily.dufangDate = today;
@@ -1243,6 +1288,8 @@ class GameEngine {
       else if (c.type === 'prestigeCount') met = this.state.prestige.count >= c.value;
       else if (c.type === 'rumorsCollected') met = this.state.rumors.completed.length >= c.value;
       else if (c.type === 'maxOfflineHours') met = (this.state.meta.maxOfflineHours || 0) >= c.value;
+      // v2.4: 赌石之王 — 集齐天字号藏品
+      else if (c.type === 'stoneCollectionsAll') met = this.state.auction.stoneCollections.length >= 2;
       if (met) {
         this.state.achievements[ach.id] = true;
         this.addLog(LOG_TEMPLATES.achievementUnlock.replace('{name}', ach.name), 'success');
@@ -1296,6 +1343,16 @@ class GameEngine {
       shopSelling: { totalSellCount: this.state.shopSelling.totalSellCount, shopCooldowns: { ...this.state.shopSelling.shopCooldowns } },
       burnBlood: { ...this.state.burnBlood },
       gameOver: this.state.gameOver,
+      auction: {
+        unlocked: this.state.auction.unlocked,
+        items: this.state.auction.items.map(i => ({ ...i })),
+        lastRefreshStep: this.state.auction.lastRefreshStep,
+        forceRefreshUsedToday: this.state.auction.forceRefreshUsedToday,
+        forceRefreshDate: this.state.auction.forceRefreshDate,
+        heishiTokensBoughtThisRound: this.state.auction.heishiTokensBoughtThisRound,
+        collections: [...this.state.auction.collections],
+        stoneCollections: [...this.state.auction.stoneCollections],
+      },
       commodities: { ...this.state.commodities },
       rumors: { collected: { ...this.state.rumors.collected }, completed: [...this.state.rumors.completed] },
       achievements: { ...this.state.achievements },
@@ -1341,6 +1398,8 @@ class GameEngine {
       if (d.shopSelling) this.state.shopSelling = { totalSellCount: d.shopSelling.totalSellCount || 0, shopCooldowns: d.shopSelling.shopCooldowns || {} };
       if (d.burnBlood) this.state.burnBlood = { ...this.state.burnBlood, ...d.burnBlood };
       if (d.gameOver !== undefined) this.state.gameOver = d.gameOver;
+      // v2.4 拍卖迁移
+      if (d.auction) this.state.auction = { ...this.state.auction, ...d.auction };
       if (d.commodities) this.state.commodities = d.commodities;
       if (d.rumors) { this.state.rumors.collected = d.rumors.collected || {}; this.state.rumors.completed = d.rumors.completed || []; }
       if (d.achievements) this.state.achievements = d.achievements;
@@ -1374,6 +1433,8 @@ class GameEngine {
       if (d.shopSelling) this.state.shopSelling = { totalSellCount: d.shopSelling.totalSellCount || 0, shopCooldowns: d.shopSelling.shopCooldowns || {} };
       if (d.burnBlood) this.state.burnBlood = { ...this.state.burnBlood, ...d.burnBlood };
       if (d.gameOver !== undefined) this.state.gameOver = d.gameOver;
+      // v2.4 拍卖迁移
+      if (d.auction) this.state.auction = { ...this.state.auction, ...d.auction };
       if (d.commodities) this.state.commodities = d.commodities;
       if (d.rumors) { this.state.rumors.collected = d.rumors.collected || {}; this.state.rumors.completed = d.rumors.completed || []; }
       if (d.achievements) this.state.achievements = d.achievements;
@@ -1729,8 +1790,15 @@ class GameEngine {
       if (this.state.resources.silver < tier.price) return { success: false, reason: 'no_silver' };
       this.state.resources.silver -= tier.price;
     }
-    // 选择品质概率表
-    const qualityTable = isHeishiStone ? DUFANG_CONFIG.stone.heishiQualities : DUFANG_CONFIG.stone.qualities;
+    // 选择品质概率表 — v2.4 天字号原石使用专属概率
+    let qualityTable;
+    if (tier.specialTable) {
+      qualityTable = DUFANG_CONFIG.stone.heavenQualities;
+    } else if (isHeishiStone) {
+      qualityTable = DUFANG_CONFIG.stone.heishiQualities;
+    } else {
+      qualityTable = DUFANG_CONFIG.stone.qualities;
+    }
     // 保底机制
     let pityBonus = 0;
     const pityThreshold = DUFANG_CONFIG.stone.pityThreshold;
@@ -1739,8 +1807,11 @@ class GameEngine {
       pityBonus = pityPct;
       this.addLog(LOG_TEMPLATES.dufangStonePity.replace('{count}', this.state.daily.dufangStonePity), 'success');
     }
-    // 品质修正
-    const qualityMod = tier.qualityMod;
+    // 品质修正 — v2.4 帝王绿翡翠加成
+    let qualityMod = tier.qualityMod;
+    if (this.state.auction.stoneCollections.includes('jade_emperor')) {
+      qualityMod += 0.05;
+    }
     // 加权随机
     const roll = Math.random();
     let cumulative = 0;
@@ -1763,8 +1834,27 @@ class GameEngine {
     const silverGain = Math.floor(tier.price * selectedQuality.value);
     this.state.resources.silver += silverGain;
     this.addLog(LOG_TEMPLATES.dufangStoneResult.replace('{tier}', tier.name).replace('{quality}', selectedQuality.icon + selectedQuality.name).replace('{value}', selectedQuality.value).replace('{silver}', silverGain), 'success');
+    // v2.4 天字号藏品掉落
+    let collectionDrop = null;
+    if (tier.id === 'heaven') {
+      const dropRoll = Math.random();
+      if (dropRoll < DUFANG_CONFIG.stone.collectionDropChance) {
+        const unowned = Object.keys(DUFANG_CONFIG.stone.collections).filter(
+          id => !this.state.auction.stoneCollections.includes(id)
+        );
+        if (unowned.length > 0) {
+          const pickedId = unowned[Math.floor(Math.random() * unowned.length)];
+          const colInfo = DUFANG_CONFIG.stone.collections[pickedId];
+          this.state.auction.stoneCollections.push(pickedId);
+          collectionDrop = colInfo;
+          this.addLog(`💎 天降奇珍！从原石中开出了「${colInfo.icon}${colInfo.name}」！估价${colInfo.valuation.toLocaleString()}🪙`, 'success');
+          this.applyPermanentUpgrades();
+          this.checkAchievements();
+        }
+      }
+    }
     this.autoSave();
-    return { success: true, tier: tier.name, quality: selectedQuality, value: selectedQuality.value, silverGain, pity: this.state.daily.dufangStonePity };
+    return { success: true, tier: tier.name, quality: selectedQuality, value: selectedQuality.value, silverGain, pity: this.state.daily.dufangStonePity, collectionDrop };
   }
 
   /** 竞猜 */
@@ -1879,12 +1969,17 @@ class GameEngine {
       field.pendingOutput += output;
       // 风险累积（每10秒=1/6分钟）
       field.riskAccumulated += speedConfig.riskPerMin / 6;
-      // 查封检查
+      // 查封检查 — v2.4 御前圣令免疫查封
       if (field.riskAccumulated >= YANCHANG_CONFIG.riskMax) {
-        const idx = this.state.saltFields.indexOf(field);
-        this.state.saltFields.splice(idx, 1);
-        this.addLog(LOG_TEMPLATES.yanchangConfiscated, 'danger');
-        this.emit('saltFieldConfiscated', { fieldId: field.id });
+        if (this.checkConfiscationImmunity()) {
+          field.riskAccumulated = 0; // 免疫：重置风险但不没收盐场
+          this.addLog(LOG_TEMPLATES.auctionImperialDecreeBlock, 'success');
+        } else {
+          const idx = this.state.saltFields.indexOf(field);
+          this.state.saltFields.splice(idx, 1);
+          this.addLog(LOG_TEMPLATES.yanchangConfiscated, 'danger');
+          this.emit('saltFieldConfiscated', { fieldId: field.id });
+        }
       } else if (field.riskAccumulated >= 80) {
         this.addLog(LOG_TEMPLATES.yanchangRiskWarning.replace('{risk}', Math.floor(field.riskAccumulated)), 'warning');
       }
@@ -2005,22 +2100,27 @@ class GameEngine {
   enterHeishi() {
     if (!this.hasItem('heishiling')) return { success: false, reason: 'no_token', msg: LOG_TEMPLATES.heishiNoToken };
     this.removeItem('heishiling', 1);
-    // 查抄判定
-    let inspected = false, loss = 0, repGain = 0;
+    // 查抄判定 — v2.4 御前圣令免疫查封
+    let inspected = false, loss = 0, repGain = 0, decreeBlocked = false;
     if (Math.random() < HEISHI_CONFIG.inspectRate) {
-      inspected = true;
-      loss = Math.floor(this.state.resources.silver * HEISHI_CONFIG.inspectSilverLoss);
-      repGain = HEISHI_CONFIG.inspectReputationBonus;
-      this.state.resources.silver -= loss;
-      this.modifyResource('reputation', repGain);
-      this.addLog(LOG_TEMPLATES.heishiInspect.replace('{loss}', loss).replace('{rep}', repGain), 'danger');
+      if (this.checkConfiscationImmunity()) {
+        decreeBlocked = true;
+        this.addLog(LOG_TEMPLATES.auctionImperialDecreeBlock, 'success');
+      } else {
+        inspected = true;
+        loss = Math.floor(this.state.resources.silver * HEISHI_CONFIG.inspectSilverLoss);
+        repGain = HEISHI_CONFIG.inspectReputationBonus;
+        this.state.resources.silver -= loss;
+        this.modifyResource('reputation', repGain);
+        this.addLog(LOG_TEMPLATES.heishiInspect.replace('{loss}', loss).replace('{rep}', repGain), 'danger');
+      }
     } else {
       this.addLog(LOG_TEMPLATES.heishiEnter, 'info');
     }
     if (this.state.heishi.goods.length === 0) this.refreshHeishi();
-    this.emit('heishiEnter', { inspected, loss, repGain });
+    this.emit('heishiEnter', { inspected, loss, repGain, decreeBlocked });
     this.autoSave();
-    return { success: true, inspected, loss, repGain };
+    return { success: true, inspected, loss, repGain, decreeBlocked };
   }
 
   buyHeishiGood(goodId) {
@@ -2131,6 +2231,232 @@ class GameEngine {
   updateTutorialState() { if (!this.state.meta.tutorialCompleted) this.emit('tutorialNeeded'); }
   completeTutorial() { this.state.meta.tutorialCompleted = true; this.autoSave(); }
   skipTutorial() { this.state.meta.tutorialCompleted = true; this.emit('tutorialSkipped'); this.autoSave(); }
+
+  // ==================== v2.4 聚宝阁（拍卖）= ====================
+  checkAuctionUnlock() {
+    if (!this.state.auction.unlocked && this.state.resources.reputation >= AUCTION_CONFIG.unlockReputation) {
+      this.state.auction.unlocked = true;
+      this.addLog(LOG_TEMPLATES.auctionUnlock, 'success');
+      this.emit('auctionUnlocked');
+    }
+  }
+
+  getAuctionRefreshInfo() {
+    const totalSteps = this.state.meta.totalTravels;
+    const stepsNeeded = getAuctionRefreshSteps(this.state.resources.reputation);
+    const stepsSince = totalSteps - (this.state.auction.lastRefreshStep || 0);
+    const stepsLeft = Math.max(0, stepsNeeded - stepsSince);
+    return {
+      unlocked: this.state.auction.unlocked,
+      stepsLeft,
+      stepsNeeded,
+      nextRefreshStr: stepsLeft > 0 ? `${stepsLeft}步` : '即将刷新',
+      forceRefreshUsedToday: this.state.auction.forceRefreshUsedToday,
+      forceRefreshMax: AUCTION_CONFIG.forceRefreshDailyLimit,
+      heishiTokensBought: this.state.auction.heishiTokensBoughtThisRound,
+      heishiTokenMax: AUCTION_CONFIG.heishiTokenMaxPerRefresh,
+      collections: this.state.auction.collections,
+      stoneCollections: this.state.auction.stoneCollections,
+    };
+  }
+
+  refreshAuctionItems() {
+    const items = [];
+    const poolCopy = [...AUCTION_CATEGORY_POOL];
+    for (let i = 0; i < AUCTION_CONFIG.itemsPerRefresh; i++) {
+      const category = this.weightedPick(poolCopy, 'prob');
+      let item = null;
+      if (category.name === 'collectible') {
+        const available = Object.values(AUCTION_COLLECTIBLES).filter(
+          c => !this.state.auction.collections.includes(c.id)
+        );
+        if (available.length > 0) {
+          const pick = available[Math.floor(Math.random() * available.length)];
+          item = {
+            id: `auction_col_${pick.id}`,
+            name: pick.name,
+            icon: pick.icon,
+            category: 'collectibles',
+            price: pick.price,
+            data: pick,
+          };
+        }
+      } else if (category.name === 'protection') {
+        const available = Object.values(PROTECTION_ITEMS).filter(p => {
+          const existing = this.state.backpack.items.find(bi => bi.id === p.id);
+          return !existing || existing.qty < p.maxStack;
+        });
+        if (available.length > 0) {
+          const pick = available[Math.floor(Math.random() * available.length)];
+          item = {
+            id: `auction_prot_${pick.id}_${Date.now()}`,
+            name: pick.name,
+            icon: pick.icon,
+            category: 'protection',
+            price: pick.price,
+            priceLabel: pick.priceLabel || `${pick.price}🪙`,
+            data: pick,
+          };
+        }
+      } else if (category.name === 'heishiToken') {
+        item = {
+          id: 'auction_heishi_token',
+          name: '黑市令',
+          icon: '🎫',
+          category: 'heishi_token',
+          price: AUCTION_CONFIG.heishiTokenPrice,
+          maxPerRefresh: AUCTION_CONFIG.heishiTokenMaxPerRefresh,
+        };
+      } else if (category.name === 'rareItem') {
+        const pick = AUCTION_RARE_ITEMS[Math.floor(Math.random() * AUCTION_RARE_ITEMS.length)];
+        const price = Math.floor(pick.originalPrice * AUCTION_CONFIG.rarePriceMarkup);
+        item = {
+          id: `auction_rare_${pick.id}_${Date.now()}`,
+          name: pick.name,
+          icon: pick.icon,
+          category: 'rare',
+          price,
+          data: pick,
+        };
+      } else if (category.name === 'consumablePack') {
+        const pick = AUCTION_CONSUMABLE_PACKS[Math.floor(Math.random() * AUCTION_CONSUMABLE_PACKS.length)];
+        item = {
+          id: `auction_pack_${pick.id}_${Date.now()}`,
+          name: pick.name,
+          icon: pick.icon,
+          category: 'consumable',
+          price: pick.price,
+          data: pick,
+        };
+      }
+      if (item) items.push(item);
+    }
+    this.state.auction.items = items;
+    this.state.auction.lastRefreshStep = this.state.meta.totalTravels;
+    this.state.auction.heishiTokensBoughtThisRound = 0;
+    this.addLog(LOG_TEMPLATES.auctionRefreshed, 'info');
+    this.emit('auctionRefreshed', { items });
+    this.autoSave();
+  }
+
+  weightedPick(arr, weightKey) {
+    const total = arr.reduce((sum, a) => sum + (a[weightKey] || 0), 0);
+    let roll = Math.random() * total;
+    for (const a of arr) {
+      roll -= (a[weightKey] || 0);
+      if (roll <= 0) return a;
+    }
+    return arr[arr.length - 1];
+  }
+
+  purchaseAuctionItem(idx) {
+    if (!this.state.auction.unlocked) return { success: false, reason: 'locked' };
+    if (idx < 0 || idx >= this.state.auction.items.length) return { success: false, reason: 'invalid' };
+    const item = this.state.auction.items[idx];
+    if (!item) return { success: false, reason: 'sold' };
+    if (this.state.resources.silver < item.price) return { success: false, reason: 'no_silver', msg: LOG_TEMPLATES.auctionNoSilver };
+    // 检查背包空间
+    if (this.state.backpack.items.length >= this.state.backpack.maxSlots) {
+      return { success: false, reason: 'bag_full', msg: LOG_TEMPLATES.auctionBagFull };
+    }
+    this.state.resources.silver -= item.price;
+    // 根据类别处理
+    if (item.category === 'collectibles') {
+      if (this.state.auction.collections.includes(item.data.id)) {
+        this.state.resources.silver += item.price;
+        return { success: false, reason: 'already_owned' };
+      }
+      this.state.auction.collections.push(item.data.id);
+      this.addLog(LOG_TEMPLATES.auctionBuy.replace('{name}', `${item.icon}${item.name}`).replace('{price}', item.price.toLocaleString()), 'success');
+    } else if (item.category === 'protection') {
+      const existing = this.state.backpack.items.find(bi => bi.id === item.data.id);
+      if (existing && existing.qty >= item.data.maxStack) {
+        this.state.resources.silver += item.price;
+        return { success: false, reason: 'max_stack', msg: LOG_TEMPLATES.auctionProtectionMax };
+      }
+      this.addItem(item.data.id, 1);
+      this.addLog(LOG_TEMPLATES.auctionBuy.replace('{name}', `${item.icon}${item.name}`).replace('{price}', item.price.toLocaleString()), 'success');
+    } else if (item.category === 'rare') {
+      this.addItem(item.data.id, item.data.qty || 1);
+      this.addLog(LOG_TEMPLATES.auctionBuy.replace('{name}', `${item.icon}${item.name}`).replace('{price}', item.price.toLocaleString()), 'success');
+    } else if (item.category === 'consumable') {
+      for (const r of (item.data.rewards || [])) {
+        if (r.type === 'item') this.addItem(r.id, r.qty || 1);
+        else if (r.type === 'silver') this.state.resources.silver += r.amount;
+        else if (r.type === 'reputation') this.modifyResource('reputation', r.amount);
+        else if (r.type === 'stamina') this.modifyResource('stamina', r.amount);
+      }
+      this.addLog(LOG_TEMPLATES.auctionBuy.replace('{name}', `${item.icon}${item.name}`).replace('{price}', item.price.toLocaleString()), 'success');
+    }
+    this.state.auction.items.splice(idx, 1);
+    this.emit('auctionItemBought', { idx, item });
+    this.autoSave();
+    return { success: true, item };
+  }
+
+  forceRefreshAuction() {
+    if (!this.state.auction.unlocked) return { success: false, reason: 'locked' };
+    const today = this.getDateStr();
+    if (this.state.auction.forceRefreshDate !== today) {
+      this.state.auction.forceRefreshUsedToday = 0;
+      this.state.auction.forceRefreshDate = today;
+    }
+    if (this.state.auction.forceRefreshUsedToday >= AUCTION_CONFIG.forceRefreshDailyLimit) {
+      return { success: false, reason: 'limit', msg: LOG_TEMPLATES.auctionForceRefreshLimit.replace('{limit}', AUCTION_CONFIG.forceRefreshDailyLimit) };
+    }
+    if (this.state.resources.silver < AUCTION_CONFIG.forceRefreshCost) {
+      return { success: false, reason: 'no_silver', msg: LOG_TEMPLATES.auctionForceRefreshNoSilver };
+    }
+    this.state.resources.silver -= AUCTION_CONFIG.forceRefreshCost;
+    this.state.auction.forceRefreshUsedToday++;
+    this.addLog(LOG_TEMPLATES.auctionForceRefresh, 'info');
+    this.refreshAuctionItems();
+    return { success: true };
+  }
+
+  purchaseAuctionHeishiToken(qty = 1) {
+    if (!this.state.auction.unlocked) return { success: false, reason: 'locked' };
+    qty = Math.max(1, Math.min(qty, AUCTION_CONFIG.heishiTokenMaxPerRefresh - this.state.auction.heishiTokensBoughtThisRound));
+    if (qty <= 0) return { success: false, reason: 'limit', msg: LOG_TEMPLATES.auctionHeishiTokenLimit.replace('{max}', AUCTION_CONFIG.heishiTokenMaxPerRefresh) };
+    const totalPrice = AUCTION_CONFIG.heishiTokenPrice * qty;
+    if (this.state.resources.silver < totalPrice) return { success: false, reason: 'no_silver', msg: LOG_TEMPLATES.auctionNoSilver };
+    if (this.state.backpack.items.length >= this.state.backpack.maxSlots) {
+      return { success: false, reason: 'bag_full', msg: LOG_TEMPLATES.auctionBagFull };
+    }
+    this.state.resources.silver -= totalPrice;
+    this.addItem('heishiling', qty);
+    this.state.auction.heishiTokensBoughtThisRound += qty;
+    this.addLog(LOG_TEMPLATES.auctionHeishiTokenBuy.replace('{quantity}', qty).replace('{price}', totalPrice.toLocaleString()), 'success');
+    this.emit('auctionHeishiBought', { qty, price: totalPrice });
+    this.autoSave();
+    return { success: true, qty, price: totalPrice };
+  }
+
+  checkConfiscationImmunity() {
+    if (!this.state.auction) return false;
+    const idx = this.state.backpack.items.findIndex(i => i.id === 'protection_imperial_decree');
+    if (idx >= 0) {
+      const item = this.state.backpack.items[idx];
+      if (item.qty > 1) item.qty--;
+      else this.state.backpack.items.splice(idx, 1);
+      this.emit('protectionUsed', { type: 'imperial_decree' });
+      return true;
+    }
+    return false;
+  }
+
+  checkPunitiveSetbackImmunity() {
+    if (!this.state.auction) return false;
+    const idx = this.state.backpack.items.findIndex(i => i.id === 'protection_death_medal');
+    if (idx >= 0) {
+      this.state.backpack.items.splice(idx, 1);
+      this.state.resources.stamina = 10;
+      this.addLog(LOG_TEMPLATES.auctionDeathMedalBlock, 'success');
+      this.emit('protectionUsed', { type: 'death_medal' });
+      return true;
+    }
+    return false;
+  }
 }
 
 const game = new GameEngine();

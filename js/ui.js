@@ -161,6 +161,12 @@ class GameUI {
     this.game.on('businessFlash', () => { this.renderResources(); });
     this.game.on('burnBlood', () => { this.renderResources(); }); // v2.3 燃烧精血
     this.game.on('gameOver', (d) => this.showGameOver(d)); // v2.3 游戏结束
+    // v2.4 拍卖
+    this.game.on('auctionUnlocked', () => { this.renderResources(); this.renderOuting(); });
+    this.game.on('auctionRefreshed', () => { if (this.activePanel === 'auction') this.renderAuction(); });
+    this.game.on('auctionItemBought', () => { this.renderResources(); if (this.activePanel === 'auction') this.renderAuction(); });
+    this.game.on('auctionHeishiBought', () => { this.renderResources(); this.renderBackpack(); if (this.activePanel === 'auction') this.renderAuction(); });
+    this.game.on('protectionUsed', (d) => { this.renderResources(); this.renderBackpack(); });
     setInterval(() => { this.renderResources(); this.renderShops(); }, 1000);
   }
 
@@ -711,6 +717,7 @@ class GameUI {
       case 'heishi': this.enterHeishiUI(); break;
       case 'yanchang': this.renderYanchang(); break;
       case 'gongfeng': this.renderGongfeng(); break;
+      case 'auction': this.renderAuction(); break;
       default: alert('该地点尚未开放，敬请期待后续版本！');
     }
   }
@@ -878,10 +885,21 @@ class GameUI {
     html += '<div class="stone-desc">挑选一块原石切开，品质决定价值！</div>';
     const pity = this.game.getStonePity();
     if (pity >= DUFANG_CONFIG.stone.pityThreshold) html += `<div class="stone-pity">🌟 保底触发中——已连续${pity}次未出良品！</div>`;
+    // v2.4 天字号藏品展示
+    const auctionInfo = this.game.getAuctionRefreshInfo();
+    if (auctionInfo.stoneCollections && auctionInfo.stoneCollections.length > 0) {
+      html += '<div class="stone-collections"><div class="sc-title">💠 天字号藏品</div><div class="sc-grid">';
+      for (const colId of auctionInfo.stoneCollections) {
+        const col = DUFANG_CONFIG.stone.collections[colId];
+        if (col) html += `<div class="sc-card"><div class="sc-icon">${col.icon}</div><div class="sc-info"><div class="sc-name">${col.name}</div><div class="sc-desc">${col.desc}</div></div></div>`;
+      }
+      html += '</div></div>';
+    }
     html += '<div class="stone-tiers">';
     for (const tier of DUFANG_CONFIG.stone.tiers) {
       const canAfford = this.game.getResource('silver') >= tier.price;
-      html += `<div class="stone-card"><div class="stone-icon">${tier.icon}</div><div class="stone-name">${tier.name}</div><div class="stone-price">${tier.price.toLocaleString()}🪙</div><button class="btn-sm primary" ${!canAfford ? 'disabled' : ''} onclick="window.gameUI.doStoneUI('${tier.id}')">切开</button></div>`;
+      const extraClass = tier.id === 'heaven' ? ' stone-tier-legendary-heaven' : '';
+      html += `<div class="stone-card${extraClass}"><div class="stone-icon">${tier.icon}</div><div class="stone-name">${tier.name}</div><div class="stone-price">${tier.price.toLocaleString()}🪙</div><button class="btn-sm primary" ${!canAfford ? 'disabled' : ''} onclick="window.gameUI.doStoneUI('${tier.id}')">切开</button></div>`;
     }
     html += '</div>';
     // 背包中的黑市原石
@@ -900,7 +918,12 @@ class GameUI {
     const result = this.game.doStoneCut(tierId);
     if (result.success) {
       let html = `<div class="panel-card"><div class="panel-header"><h3>💎 切原石结果</h3><button class="panel-close" onclick="window.gameUI.renderDufangStone()">← 返回</button></div>`;
-      html += `<div class="stone-result"><div class="stone-quality">${result.quality.icon} ${result.quality.name}</div><div class="stone-value">价值 ×${result.value} = ${result.silverGain.toLocaleString()}🪙</div><div class="stone-pity-count">保底计数：${result.pity}/${DUFANG_CONFIG.stone.pityThreshold}</div><button class="btn-sm primary" onclick="window.gameUI.renderDufangStone()" style="margin-top:12px;">再切一块</button></div>`;
+      html += `<div class="stone-result"><div class="stone-quality">${result.quality.icon} ${result.quality.name}</div><div class="stone-value">价值 ×${result.value} = ${result.silverGain.toLocaleString()}🪙</div><div class="stone-pity-count">保底计数：${result.pity}/${DUFANG_CONFIG.stone.pityThreshold}</div>`;
+      // v2.4 藏品掉落
+      if (result.collectionDrop) {
+        html += `<div class="stone-collection-drop"><div class="scd-icon">${result.collectionDrop.icon}</div><div class="scd-title">天降奇珍！</div><div class="scd-name">${result.collectionDrop.name}</div><div class="scd-valuation">估价 ${result.collectionDrop.valuation.toLocaleString()}🪙</div></div>`;
+      }
+      html += `<button class="btn-sm primary" onclick="window.gameUI.renderDufangStone()" style="margin-top:12px;">再切一块</button></div>`;
       this.el.modalContent.innerHTML = html;
       this.renderResources();
     } else {
@@ -1092,6 +1115,83 @@ class GameUI {
     }
     this.renderGongfeng();
     this.renderResources();
+  }
+
+  // --- v2.4 聚宝阁（拍卖） ---
+  renderAuction() {
+    const info = this.game.getAuctionRefreshInfo();
+    if (!info.unlocked) {
+      this.renderOuting();
+      return;
+    }
+    const pct = info.stepsNeeded > 0 ? Math.min(100, Math.floor(((info.stepsNeeded - info.stepsLeft) / info.stepsNeeded) * 100)) : 100;
+    let html = `<div class="panel-card"><div class="panel-header"><h3>🏛️ 聚宝阁</h3><button class="panel-close" onclick="window.gameUI.renderOuting()">← 返回</button></div>`;
+    // 刷新进度条
+    html += `<div class="auction-refresh-bar"><div class="arb-label">距刷新还有 <strong>${info.stepsLeft}</strong> 步</div><div class="arb-track"><div class="arb-fill" style="width:${pct}%"></div></div></div>`;
+    // 收藏品展示
+    if (info.collections.length > 0 || info.stoneCollections.length > 0) {
+      html += `<div class="auction-collections"><div class="ac-title">🏆 收藏品</div><div class="ac-grid">`;
+      const allCols = [...info.collections.map(id => {
+        const c = AUCTION_COLLECTIBLES[id];
+        return c ? { ...c, source: 'auction' } : null;
+      }).filter(Boolean), ...info.stoneCollections.map(id => {
+        const c = DUFANG_CONFIG.stone.collections[id];
+        return c ? { ...c, source: 'stone' } : null;
+      }).filter(Boolean)];
+      for (const col of allCols) {
+        html += `<div class="ac-card ${col.source === 'stone' ? 'ac-stone' : ''}"><div class="ac-icon">${col.icon}</div><div class="ac-name">${col.name}</div><div class="ac-desc">${col.desc}</div><div class="ac-valuation">估价 ${col.valuation.toLocaleString()}🪙</div></div>`;
+      }
+      html += `</div></div>`;
+    }
+    // 拍品网格
+    html += `<div class="auction-grid">`;
+    for (let i = 0; i < info.items ? this.game.state.auction.items.length : 0; i++) {
+      const item = this.game.state.auction.items[i];
+      const catLabel = item.category === 'collectibles' ? '收藏品' : item.category === 'protection' ? '保护' : item.category === 'rare' ? '稀有' : '消耗包';
+      const catClass = item.category === 'collectibles' ? 'ac-cat-collectible' : item.category === 'protection' ? 'ac-cat-protection' : item.category === 'rare' ? 'ac-cat-rare' : 'ac-cat-consumable';
+      html += `<div class="auction-item"><div class="ai-icon">${item.icon}</div><div class="ai-name">${item.name}</div><div class="ai-category ${catClass}">${catLabel}</div><div class="ai-price">${item.price.toLocaleString()}🪙</div><button class="btn-sm primary" onclick="window.gameUI.buyAuctionItemUI(${i})">一口价</button></div>`;
+    }
+    html += `</div>`;
+    // 黑市令通道
+    const htLeft = info.heishiTokenMax - info.heishiTokensBought;
+    html += `<div class="auction-heishi-channel"><div class="ahc-header">🎫 黑市令通道</div><div class="ahc-body"><div class="ahc-info">${AUCTION_CONFIG.heishiTokenPrice.toLocaleString()}🪙/个 · 本轮剩余 ${htLeft}/${info.heishiTokenMax}</div><button class="btn-sm ${htLeft > 0 ? 'primary' : ''}" ${htLeft <= 0 ? 'disabled' : ''} onclick="window.gameUI.buyAuctionHeishiTokenUI()">购入黑市令</button></div></div>`;
+    // 强制刷新按钮
+    const frLeft = info.forceRefreshMax - info.forceRefreshUsedToday;
+    html += `<div class="auction-force-refresh"><div class="afr-info">强制刷新：${AUCTION_CONFIG.forceRefreshCost.toLocaleString()}🪙 · 今日剩余 ${frLeft}/${info.forceRefreshMax} 次</div><button class="btn-sm ${frLeft > 0 ? 'warning' : ''}" ${frLeft <= 0 ? 'disabled' : ''} onclick="window.gameUI.forceRefreshAuctionUI()">💰 强制刷新</button></div>`;
+    html += `</div></div>`;
+    this.activePanel = 'auction';
+    this.el.panel.innerHTML = html;
+  }
+
+  buyAuctionItemUI(idx) {
+    const result = this.game.purchaseAuctionItem(idx);
+    if (!result.success) {
+      if (result.msg) alert(result.msg);
+      return;
+    }
+    this.renderAuction();
+    this.renderResources();
+  }
+
+  forceRefreshAuctionUI() {
+    const result = this.game.forceRefreshAuction();
+    if (!result.success) {
+      if (result.msg) alert(result.msg);
+      return;
+    }
+    this.renderAuction();
+    this.renderResources();
+  }
+
+  buyAuctionHeishiTokenUI() {
+    const result = this.game.purchaseAuctionHeishiToken(1);
+    if (!result.success) {
+      if (result.msg) alert(result.msg);
+      return;
+    }
+    this.renderAuction();
+    this.renderResources();
+    this.renderBackpack();
   }
 
   // --- v2.2 里程碑庆典弹窗 ---

@@ -5,7 +5,7 @@
 
 // ==================== 游戏常量 ====================
 const GAME_CONFIG = {
-  version: '2.3.0',
+  version: '2.4.0',
   // 资源初始值
   initialSilver: 100,
   initialReputation: 0,
@@ -351,7 +351,64 @@ const LOCATIONS = {
     category: 'endgame',
     content: 'gongfeng',
   },
+  auction: {
+    id: 'auction', name: '聚宝阁', shortName: '拍卖', icon: '🏛️', description: '拍卖珍奇之物，一口价无竞价',
+    unlockCondition: { resource: 'reputation', amount: 300 },
+    category: 'auction',
+    content: 'auction',
+  },
 };
+
+// ==================== 聚宝阁拍卖场（v2.4） ====================
+const AUCTION_CONFIG = {
+  unlockReputation: 300,
+  itemsPerRefresh: 4,
+  forceRefreshCost: 100000,
+  forceRefreshDailyLimit: 2,
+  heishiTokenPrice: 8000,
+  heishiTokenMaxPerRefresh: 3,
+  rarePriceMarkup: 1.5,
+};
+
+function getAuctionRefreshSteps(reputation) {
+  if (reputation >= 1500) return 12;
+  if (reputation >= 1000) return 16;
+  if (reputation >= 600) return 20;
+  return 24;
+}
+
+const AUCTION_COLLECTIBLES = {
+  collectible_jade: { id:'collectible_jade', name:'千年翡翠', icon:'💎', price:500000, weight:70, type:'collectible', rarity:'epic', desc:'历经千年沉淀的翡翠原石，通体碧绿，价值连城。' },
+  collectible_ginseng: { id:'collectible_ginseng', name:'万年人参', icon:'🌿', price:3000000, weight:25, type:'collectible', rarity:'legendary', desc:'深山老林中采得的万年野山参，形如人形，药香扑鼻。' },
+  collectible_iced_tea: { id:'collectible_iced_tea', name:'百万年冰红茶', icon:'🧊', price:30000000, weight:5, type:'collectible', rarity:'mythic', desc:'传说中的至尊饮品，据说饮一口可通天地……但你舍不得。' },
+};
+
+const PROTECTION_ITEMS = {
+  protection_imperial_decree: { id:'protection_imperial_decree', name:'御前圣令', icon:'📜', price:150000, type:'protection', maxStack:3, protectionType:'confiscation', sellPrice:50000, desc:'盖有御玺的圣令，可免疫一次查封（黑市/盐场）。最多持有3个。' },
+  protection_death_medal: { id:'protection_death_medal', name:'免死金牌', icon:'🏅', price:500000, type:'protection', maxStack:1, protectionType:'punitiveSetback', sellPrice:200000, desc:'御赐免死金牌，可免除一次惩罚性倒退（体力归零时全部惩罚）。最多持有1个。' },
+};
+
+const AUCTION_RARE_ITEMS = [
+  { itemId:'lingzhi', weight:15, originalPrice:400 }, { itemId:'xianluyin', weight:15, originalPrice:500 },
+  { itemId:'fuxinggaozhaofu', weight:12, originalPrice:250 }, { itemId:'fengshuiluopan', weight:12, originalPrice:180 },
+  { itemId:'shangtujinnang', weight:10, originalPrice:350 }, { itemId:'qiannianrenshen', weight:8, originalPrice:2000 },
+  { itemId:'juqidan', weight:8, originalPrice:1500 }, { itemId:'shanglutongdie', weight:8, originalPrice:3000 },
+  { itemId:'xueshanshenwang', weight:5, originalPrice:6000 }, { itemId:'tianyuandan', weight:5, originalPrice:4000 },
+  { itemId:'yucishangpai', weight:5, originalPrice:8000 }, { itemId:'huaxianfu', weight:7, originalPrice:500 },
+];
+
+const AUCTION_CONSUMABLE_PACKS = [
+  { id:'pack_stamina', name:'体力补给包', icon:'💊', weight:30, price:800, desc:'灵芝×1+人参×2+金创药×3', items:[{ itemId:'lingzhi',qty:1 },{ itemId:'renshen',qty:2 },{ itemId:'jinchuangyao',qty:3 }] },
+  { id:'pack_energy', name:'精力补给包', icon:'🍵', weight:30, price:1000, desc:'仙露饮×1+清心丸×2+醒神汤×2', items:[{ itemId:'xianluyin',qty:1 },{ itemId:'qingxinwan',qty:2 },{ itemId:'xingshentang',qty:2 }] },
+  { id:'pack_buff', name:'运势增益包', icon:'⭐', weight:25, price:550, desc:'福星高照符×1+风水罗盘×1+幸运符×2', items:[{ itemId:'fuxinggaozhaofu',qty:1 },{ itemId:'fengshuiluopan',qty:1 },{ itemId:'xingyunfu',qty:2 }] },
+  { id:'pack_protection', name:'护身避险包', icon:'🛡️', weight:15, price:850, desc:'护身符×2+化险符×1', items:[{ itemId:'hushenfu',qty:2 },{ itemId:'huaxianfu',qty:1 }] },
+];
+
+const AUCTION_CATEGORY_POOL = [
+  { name:'collectible', prob:0.25 }, { name:'protection', prob:0.10 },
+  { name:'heishiToken', prob:0.15 }, { name:'rareItem', prob:0.30 },
+  { name:'consumablePack', prob:0.20 },
+];
 
 // ==================== 酒楼宴请系统（v2.0） ====================
 const BANQUET_CONFIG = {
@@ -466,6 +523,7 @@ const DUFANG_CONFIG = {
       { id:'ordinary', name:'普通原石', icon:'🪨', price:1000, qualityMod:0 },
       { id:'fine', name:'精品原石', icon:'💠', price:5000, qualityMod:0.15 },
       { id:'legend', name:'传说原石', icon:'💎', price:20000, qualityMod:0.35 },
+      { id:'heaven', name:'天字号原石', icon:'🌅', price:100000, qualityMod:0.55, specialTable:true },
     ],
     qualities: [
       { id:'waste', name:'废料', icon:'🗑️', value:0.2, chance:0.30 },
@@ -486,6 +544,22 @@ const DUFANG_CONFIG = {
       { id:'elite', name:'极品玉', icon:'🟡', value:4.0, chance:0.15 },
       { id:'legend', name:'传说玉', icon:'🌟', value:10.0, chance:0.08 },
     ],
+    // 天字号原石专属概率表（v2.4）— 10万银两
+    heavenQualities: [
+      { id:'waste', name:'废料', icon:'🗑️', value:0.2, chance:0.05 },
+      { id:'common', name:'普通玉', icon:'🟢', value:0.5, chance:0.10 },
+      { id:'good', name:'良品玉', icon:'🔵', value:1.0, chance:0.15 },
+      { id:'rare', name:'稀有玉', icon:'🟣', value:2.0, chance:0.25 },
+      { id:'elite', name:'极品玉', icon:'🟡', value:4.0, chance:0.25 },
+      { id:'legend', name:'传说玉', icon:'🌟', value:10.0, chance:0.15 },
+      { id:'mythic', name:'天命神玉', icon:'✨', value:25.0, chance:0.05 },
+    ],
+    // 天字号藏品（1%从10w原石掉落）
+    collectionDropChance: 0.01,
+    collections: {
+      jade_emperor: { id:'jade_emperor', name:'帝王绿翡翠', icon:'💚', valuation:10000000, desc:'天字号原石出产，持有即生效：赌石≥良品概率+5%', effect:{ type:'stoneQualityBoost', value:0.05 } },
+      jade_muttonFat: { id:'jade_muttonFat', name:'和田羊脂白玉', icon:'🤍', valuation:10000000, desc:'天字号原石出产，持有即生效：所有店铺产出+3%', effect:{ type:'shopOutputBoost', value:0.03 } },
+    },
   },
   // 竞猜
   quiz: {
@@ -608,6 +682,7 @@ const ACHIEVEMENTS = [
   { id:'first_prestige',  name:'涅槃重生',   desc:'首次完成声望重置',           icon:'🔥', condition:{type:'prestigeCount',value:1},            reward:{item:'shanglutongdie',qty:1} },
   { id:'rumor_10',        name:'江湖百晓生', desc:'收集10个传闻碎片',           icon:'📖', condition:{type:'rumorsCollected',value:10},         reward:{item:'xianluyin',qty:1} },
   { id:'offline_8h',      name:'离线达人',   desc:'单次离线满8小时',            icon:'😴', condition:{type:'maxOfflineHours',value:8},          reward:{silver:500} },
+  { id:'stone_king',      name:'赌石之王',   desc:'集齐帝王绿翡翠与和田羊脂白玉', icon:'✨', condition:{type:'stoneCollectionsAll',value:1},         reward:{item:'shanglutongdie',qty:1} },
 ];
 
 // ==================== 传闻碎片 ====================
@@ -983,4 +1058,19 @@ const LOG_TEMPLATES = {
   burnBloodLifetimeExceed: '🩸 整局游戏最多燃烧100点精血，已达上限！',
   gameOverTitle: '游戏结束',
   gameOverDesc: '燃烧精血耗尽了最后一丝体力，掌柜的倒在了商铺中...',
+  // v2.4 聚宝阁
+  auctionUnlock: '🏛️ 声望达到300，聚宝阁的大门为你敞开！',
+  auctionRefreshed: '🏛️ 聚宝阁新拍品已上架！',
+  auctionBuy: '🏛️ 购得「{name}」，花费{price}🪙',
+  auctionNoSilver: '银两不足，无法购买此拍品！',
+  auctionSold: '该拍品已售出',
+  auctionBagFull: '背包已满，无法购买！',
+  auctionHeishiTokenBuy: '🏛️ 聚宝阁购入{quantity}个黑市令，花费{price}🪙',
+  auctionHeishiTokenLimit: '本轮限购{max}个',
+  auctionForceRefresh: '🏛️ 花费10万🪙强制刷新拍品！',
+  auctionForceRefreshLimit: '今日强制刷新次数已用完（{limit}次/天）',
+  auctionForceRefreshNoSilver: '银两不足10万，无法强制刷新',
+  auctionImperialDecreeBlock: '📜 御前圣令护体，查封免疫！',
+  auctionDeathMedalBlock: '🏅 免死金牌护体，逢凶化吉！体力恢复至10。',
+  auctionProtectionMax: '该保护道具已达持有上限',
 };
