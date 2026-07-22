@@ -548,6 +548,7 @@ html{scroll-behavior:smooth}
 
 /* ==================== v2.3 动态定价 ==================== */
 .price-original{text-decoration:line-through;color:var(--ink-muted);font-size:0.7rem;opacity:0.6}
+.discount-badge{display:inline-block;background:rgba(34,139,34,0.15);color:#2e8b32;font-size:0.6rem;padding:1px 4px;border-radius:3px;margin-left:2px}
 .sell-btn{margin-top:4px!important;width:100%;font-size:0.75rem;background:rgba(196,30,58,0.08);border:1px solid rgba(196,30,58,0.3);color:var(--danger)}
 .sell-btn:hover:not(:disabled){background:rgba(196,30,58,0.15)}
 .sell-btn:disabled{opacity:0.4;cursor:not-allowed}
@@ -578,7 +579,7 @@ html{scroll-behavior:smooth}
   body{font-size:15px}
   #app{padding:var(--space-sm);max-width:100%}
   .main-layout{grid-template-columns:1fr;gap:var(--space-sm)}
-  .sidebar{order:-1;flex-direction:column;gap:var(--space-sm)}
+  .sidebar{order:0;flex-direction:column;gap:var(--space-sm)}
   .shop-panel{flex:unset;min-width:unset}
   .navbar{flex-direction:column;align-items:flex-start;padding:var(--space-sm);border-radius:var(--radius-md);gap:var(--space-xs)}
   .navbar-tabs{order:2;width:100%;justify-content:flex-start;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}

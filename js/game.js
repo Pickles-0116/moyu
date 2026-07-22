@@ -744,8 +744,8 @@ class GameEngine {
     if (!shop || !shop.unlocked || shop.level < GAME_CONFIG.itemPriceDiscountStartLevel) {
       return Math.floor(basePrice * (1 + GAME_CONFIG.itemPriceBaseMarkup));
     }
-    const discountTier = Math.floor(shop.level / 10);
-    const shopDiscount = Math.min(discountTier * GAME_CONFIG.itemPriceDiscountPerLevel, GAME_CONFIG.itemPriceMaxDiscount);
+    // v2.4修复：每级递减折扣（原每10级）
+    const shopDiscount = Math.min(shop.level * GAME_CONFIG.itemPriceDiscountPerLevel, GAME_CONFIG.itemPriceMaxDiscount);
     const dynamicMultiplier = (1 + GAME_CONFIG.itemPriceBaseMarkup) * (1 - shopDiscount);
     return Math.floor(basePrice * dynamicMultiplier);
   }
@@ -760,8 +760,8 @@ class GameEngine {
     if (shopId) {
       const shop = this.state.shops[shopId];
       if (shop && shop.unlocked && shop.level >= GAME_CONFIG.itemPriceDiscountStartLevel) {
-        const tier = Math.floor(shop.level / 10);
-        discount = Math.min(tier * GAME_CONFIG.itemPriceDiscountPerLevel, GAME_CONFIG.itemPriceMaxDiscount);
+        // v2.4修复：每级递减折扣
+        discount = Math.min(shop.level * GAME_CONFIG.itemPriceDiscountPerLevel, GAME_CONFIG.itemPriceMaxDiscount);
       }
     }
     return { basePrice, dynamicPrice, discount, shopId, isDynamic: !!shopId };
@@ -1813,18 +1813,21 @@ class GameEngine {
       qualityMod += 0.05;
     }
     // 加权随机
+    const qualityLevels = qualityTable.map(q => q.id);
+    const goodIdx = qualityLevels.indexOf('good');
     const roll = Math.random();
     let cumulative = 0;
     let selectedQuality = qualityTable[0];
-    for (const q of qualityTable) {
-      let adjustedChance = q.chance + pityBonus;
+    for (let i = 0; i < qualityTable.length; i++) {
+      const q = qualityTable[i];
+      let adjustedChance = q.chance;
       if (q.id !== 'waste') adjustedChance += qualityMod;
+      // 保底bonus只加到good及以上品质，避免膨胀低品质概率
+      if (i >= goodIdx && goodIdx >= 0) adjustedChance += pityBonus;
       cumulative += adjustedChance;
       if (roll < cumulative) { selectedQuality = q; break; }
     }
     // 判断是否为good及以上
-    const qualityLevels = qualityTable.map(q => q.id);
-    const goodIdx = qualityLevels.indexOf('good');
     const selectedIdx = qualityLevels.indexOf(selectedQuality.id);
     if (selectedIdx < goodIdx) {
       this.state.daily.dufangStonePity++;

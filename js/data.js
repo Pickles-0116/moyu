@@ -40,10 +40,10 @@ const GAME_CONFIG = {
   businessFlashDuration: 30, // 持续30秒
   businessFlashMultiplier: 2.0, // 产出×2
 
-  // v2.3 道具动态定价
+  // v2.3 道具动态定价（v2.4修复：每级递减，Lv.1起效）
   itemPriceBaseMarkup: 0.30, // 基础加价30%
-  itemPriceDiscountPerLevel: 0.04, // 每10级折扣4%
-  itemPriceDiscountStartLevel: 10, // Lv.10起效
+  itemPriceDiscountPerLevel: 0.004, // 每级折扣0.4%（原每10级4%）
+  itemPriceDiscountStartLevel: 1, // Lv.1起效（原Lv.10）
   itemPriceMaxDiscount: 0.40, // 最大店铺等级折扣40%
 
   // v2.3 店铺变卖

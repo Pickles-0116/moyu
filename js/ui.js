@@ -400,9 +400,11 @@ class GameUI {
             const priceInfo = this.game.getItemPriceInfo(si.id);
             const canBuy = this.game.getResource('silver') >= dynamicPrice;
             const itemType = itemDef.type === 'permanent' ? '永久' : '';
-            let priceHtml = `<small>${dynamicPrice.toLocaleString()}🪙</small>`;
+            // v2.4修复：始终显示划线对比价，让玩家看到每级降价
+            let priceHtml = `<small><span class="price-original">${ITEM_DEFINITIONS[si.id].price.toLocaleString()}</span> ${dynamicPrice.toLocaleString()}🪙</small>`;
             if (priceInfo.isDynamic && priceInfo.discount > 0) {
-              priceHtml = `<small><span class="price-original">${si.price.toLocaleString()}</span> ${dynamicPrice.toLocaleString()}🪙</small>`;
+              const pct = Math.round(priceInfo.discount * 100);
+              priceHtml = `<small><span class="price-original">${ITEM_DEFINITIONS[si.id].price.toLocaleString()}</span> ${dynamicPrice.toLocaleString()}🪙 <span class="discount-badge">-${pct}%</span></small>`;
             }
             html += `<button class="shop-item-btn ${canBuy ? '' : 'disabled'}" onclick="window.gameUI.buyShopItem('${shopId}','${si.id}')" ${!canBuy ? 'disabled' : ''} title="${itemDef.description}">${itemDef.icon} ${itemDef.name} ${itemType}<br>${priceHtml}</button>`;
           }
