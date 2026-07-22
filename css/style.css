@@ -182,8 +182,8 @@ body::after{content:'';position:fixed;top:0;left:0;right:0;bottom:0;
 .unlock-hint{font-size:0.75rem;color:var(--ink-muted);text-align:center;padding:var(--space-xs);font-style:italic}
 
 /* ==================== 模态面板 ==================== */
-.modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:var(--bg-overlay);z-index:1500;display:flex;align-items:center;justify-content:center;animation:fadeIn 0.2s ease;backdrop-filter:blur(4px)}
-.modal-content{background:var(--bg-card);backdrop-filter:blur(30px);border:2px solid var(--gold-primary);border-radius:var(--radius-xl);padding:var(--space-xl);max-width:620px;width:95%;max-height:85vh;overflow-y:auto;box-shadow:var(--shadow-lg),0 0 60px rgba(212,168,67,0.1);animation:modalSlideIn 0.4s cubic-bezier(0.16,1,0.3,1)}
+.modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.55);z-index:1500;display:flex;align-items:center;justify-content:center;animation:fadeIn 0.2s ease}
+.modal-content{background:var(--bg-card);border:2px solid var(--gold-primary);border-radius:var(--radius-xl);padding:var(--space-xl);max-width:620px;width:95%;max-height:85vh;overflow-y:auto;box-shadow:var(--shadow-lg),0 0 60px rgba(212,168,67,0.1);animation:modalSlideIn 0.4s cubic-bezier(0.16,1,0.3,1)}
 .panel-card{}
 .panel-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-md);padding-bottom:var(--space-sm);border-bottom:1px solid var(--ink-light)}
 .panel-header h3{font-family:var(--font-heading);font-size:1.3rem}

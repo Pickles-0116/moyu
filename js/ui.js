@@ -167,7 +167,11 @@ class GameUI {
     this.game.on('auctionItemBought', () => { this.renderResources(); if (this.activePanel === 'auction') this.renderAuction(); });
     this.game.on('auctionHeishiBought', () => { this.renderResources(); this.renderBackpack(); if (this.activePanel === 'auction') this.renderAuction(); });
     this.game.on('protectionUsed', (d) => { this.renderResources(); this.renderBackpack(); });
-    setInterval(() => { this.renderResources(); this.renderShops(); }, 1000);
+    setInterval(() => {
+      if (this.activePanel) return; // 弹窗打开时跳过，避免 backdrop-filter 重算导致闪烁
+      this.renderResources();
+      this.renderShops();
+    }, 1000);
   }
 
   // ==================== 面板管理 ====================
@@ -181,6 +185,8 @@ class GameUI {
     this.activePanel = null;
     this.el.modalOverlay.style.display = 'none';
     this.el.modalContent.innerHTML = '';
+    this.renderResources(); // 补回弹窗期间跳过的刷新
+    this.renderShops();
   }
 
   // v2.3: 燃烧精血
