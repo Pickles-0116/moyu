@@ -80,7 +80,9 @@ class GameUI {
     }
     this.el.bossKeyBtn.addEventListener('click', () => this.game.toggleDisguise());
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && !this.activePanel) { e.preventDefault(); this.game.toggleDisguise(); }
+      // esc 永远优先触发伪装（disguiseOverlay z-index:9999 会覆盖弹窗），
+      // 让用户能在任何状态下（包括打开拍卖/商情等弹窗时）一键切换伪装
+      if (e.key === 'Escape') { e.preventDefault(); this.game.toggleDisguise(); }
     });
     this.el.resetBtn.addEventListener('click', () => {
       if (confirm('确定要重置游戏吗？所有进度将丢失！')) { this.game.resetGame(); }
@@ -183,7 +185,6 @@ class GameUI {
     this.game.on('auctionUnlocked', () => { this.renderResources(); this.renderOuting(); });
     this.game.on('auctionRefreshed', () => { if (this.activePanel === 'auction') this.renderAuction(); });
     this.game.on('auctionItemBought', () => { this.renderResources(); if (this.activePanel === 'auction') this.renderAuction(); });
-    this.game.on('auctionHeishiBought', () => { this.renderResources(); if (this.activePanel === 'auction') this.renderAuction(); });
     this.game.on('protectionUsed', (d) => { this.renderResources(); this.renderBackpack(); });
     setInterval(() => {
       if (this.activePanel) return; // 弹窗打开时跳过，避免 backdrop-filter 重算导致闪烁
@@ -264,7 +265,8 @@ class GameUI {
     let html = `<div class="game-over-overlay"><div class="game-over-card">`;
     html += `<div class="game-over-icon">💀</div>`;
     html += `<div class="game-over-title">${LOG_TEMPLATES.gameOverTitle}</div>`;
-    html += `<div class="game-over-desc">${LOG_TEMPLATES.gameOverDesc}</div>`;
+    const gameOverDesc = data && data.reason === 'outing' ? LOG_TEMPLATES.gameOverOutingDesc : LOG_TEMPLATES.gameOverDesc;
+    html += `<div class="game-over-desc">${gameOverDesc}</div>`;
     html += `<div class="game-over-stats">`;
     html += `<div class="go-stat"><span class="go-stat-label">总行走步数</span><span class="go-stat-value">${this.game.state.meta.totalTravels}</span></div>`;
     html += `<div class="go-stat"><span class="go-stat-label">总轮次数</span><span class="go-stat-value">${this.game.state.meta.totalRounds}</span></div>`;
@@ -676,13 +678,68 @@ class GameUI {
         itemsHtml += '<div class="bp-slot empty"></div>';
       }
     }
+    const collectionCount = (this.game.state.auction.collections || []).length + (this.game.state.auction.stoneCollections || []).length;
     let html = `<div class="panel-card"><div class="panel-header"><h3>🎒 行囊</h3><button class="panel-close" onclick="window.gameUI.closePanel()">×</button></div>`;
     html += `<div class="bp-info">容量：${bp.items.length}/${bp.maxSlots}`;
     if (canExpand) html += ` <button class="btn-sm gold" onclick="window.gameUI.expandBackpack()" ${!canAffordExpand ? 'disabled' : ''}>扩容 +${GAME_CONFIG.backpackExpandStep}格 (${expandCost}🪙${expandRep > 0 ? ` + 声望${expandRep}` : ''})</button>`;
+    html += ` <button class="btn-sm primary" onclick="window.gameUI.renderBackpackCollections()">💠 查看藏品 (${collectionCount})</button>`;
     html += `</div><div class="bp-grid">${itemsHtml}</div>`;
+    // 永久道具区（purchasedPermanents 不入背包 items，但玩家需要看到自己持有哪些永久加成）
+    const permanents = bp.purchasedPermanents || [];
+    if (permanents.length > 0) {
+      html += `<div class="bp-permanents" style="margin-top:12px;padding:8px 12px;background:var(--bg-paper);border-radius:8px;border:1px solid var(--gold-primary);">`;
+      html += `<div style="font-family:var(--font-heading);font-size:0.95rem;color:var(--gold-dark);margin-bottom:8px;">🔮 永久道具 <span style="font-size:0.75rem;color:var(--ink-muted);font-weight:normal;">(${permanents.length}件)</span></div>`;
+      html += `<div style="display:flex;flex-wrap:wrap;gap:8px;">`;
+      for (const pid of permanents) {
+        const def = ITEM_DEFINITIONS[pid];
+        if (!def) continue;
+        html += `<div class="bp-slot filled" title="${def.description}" onclick="window.gameUI.showItemDetail('${pid}')" style="min-width:70px;max-width:90px;"><span class="bp-icon">${def.icon}</span><span class="bp-name">${def.name}</span></div>`;
+      }
+      html += `</div></div>`;
+    }
     html += `<div class="bp-actions"><button class="btn-sm" onclick="window.gameUI.sortBackpack('type')">按类型排序</button><button class="btn-sm" onclick="window.gameUI.sortBackpack('rarity')">按稀有度排序</button></div>`;
     html += `<div id="itemDetail" class="item-detail" style="display:none;"></div></div>`;
     this.el.modalContent.innerHTML = html;
+  }
+  renderBackpackCollections() {
+    const collections = [
+      ...(this.game.state.auction.collections || []).map(id => {
+        const collection = AUCTION_COLLECTIBLES[id];
+        return collection ? { ...collection, source: '聚宝阁' } : null;
+      }).filter(Boolean),
+      ...(this.game.state.auction.stoneCollections || []).map(id => {
+        const collection = DUFANG_CONFIG.stone.collections[id];
+        return collection ? { ...collection, source: '赌玉' } : null;
+      }).filter(Boolean),
+    ];
+    let html = `<div class="panel-card"><div class="panel-header"><h3>💠 稀世藏品</h3><button class="panel-close" onclick="window.gameUI.renderBackpack()">← 返回背包</button></div>`;
+    html += `<div class="bp-info">已收藏：${collections.length}件 · 藏品不占背包格，持有效果自动生效</div>`;
+    if (collections.length === 0) {
+      html += `<div class="event-idle"><div class="idle-icon">💠</div><div class="idle-text">暂未获得藏品</div><div class="idle-subtitle">可从聚宝阁或赌玉中获得稀世藏品</div></div>`;
+    } else {
+      html += `<div class="ac-grid">`;
+      for (const collection of collections) {
+        html += `<div class="ac-card ac-stone"><div class="ac-icon">${collection.icon}</div><div class="ac-name">${collection.name}</div><div class="ac-category">来源：${collection.source}</div><div class="ac-desc">${collection.desc}</div><div class="ac-valuation">估价 ${(collection.valuation || collection.price || 0).toLocaleString()}🪙</div><button class="btn-sm danger" onclick="window.gameUI.sellCollectionUI('${collection.id}')">出售</button></div>`;
+      }
+      html += `</div>`;
+    }
+    html += `</div>`;
+    this.el.modalContent.innerHTML = html;
+  }
+  sellCollectionUI(collectionId) {
+    const collection = AUCTION_COLLECTIBLES[collectionId] || DUFANG_CONFIG.stone.collections[collectionId];
+    if (!collection) return;
+    const sellPrice = collection.valuation || collection.price || 0;
+    const effectWarning = collection.effect ? '\n出售后，该藏品的持有效果将立即失效。' : '';
+    if (!confirm(`确定出售「${collection.name}」并获得 ${sellPrice.toLocaleString()} 银两吗？${effectWarning}`)) return;
+    const result = this.game.sellCollection(collectionId);
+    if (!result.success) {
+      alert(result.msg || '出售失败');
+      return;
+    }
+    this.renderResources();
+    this.renderShops();
+    this.renderBackpackCollections();
   }
   showItemDetail(itemId) {
     const def = ITEM_DEFINITIONS[itemId];
@@ -690,7 +747,10 @@ class GameUI {
     const qty = this.game.getItemCount(itemId);
     const inQuick = this.game.state.backpack.quickSlots.includes(itemId);
     let html = `<div class="item-detail-card"><div class="detail-icon">${def.icon}</div><h4>${def.name}</h4><div class="detail-rarity ${def.rarity}">${def.rarity === 'legendary' ? '传说' : def.rarity === 'rare' ? '稀有' : '普通'}</div><p>${def.description}</p><p>数量：${qty}</p><div style="display:flex;gap:8px;flex-wrap:wrap;">`;
-    if (def.type !== 'permanent') {
+    // 黑市原石：直接使用会绕过赌石流程（不显示品质结果/保底/藏品掉落），改为跳赌坊
+    if (itemId === 'heishi_yuanshi' || itemId === 'heishi_yuanshi_legend') {
+      html += `<button class="btn-sm primary" onclick="window.gameUI.openDufangWithHeishi()">💎 去赌坊切开</button>`;
+    } else if (def.type !== 'permanent') {
       html += `<button class="btn-sm primary" onclick="window.gameUI.useItemFromUI('${itemId}')">使用</button>`;
     }
     if (!inQuick) {
@@ -716,6 +776,12 @@ class GameUI {
       else if (result.reason === 'wrong_context') alert(result.msg || '当前场景不可使用');
     }
     this.renderBackpack();
+  }
+  // 黑市原石专用：从背包跳到赌坊的切原石面板
+  openDufangWithHeishi() {
+    this.closePanel();
+    this.togglePanel('outing');
+    this.renderDufangStone();
   }
   setQuickSlotPrompt(itemId) {
     const slots = this.game.state.backpack.quickSlots;
@@ -747,7 +813,7 @@ class GameUI {
     // 已解锁地点
     for (const loc of activeLoc) {
       const isBanquet = loc.id === 'jiulou';
-      html += `<div class="outing-card unlocked" onclick="window.gameUI.enterLocation('${loc.id}')"><div class="outing-icon">${loc.icon}</div><div class="outing-name">${loc.shortName || loc.name}</div><div class="outing-subtitle">${loc.name}</div><div class="outing-desc">${loc.description}</div><div class="outing-badge unlocked-badge">可前往</div></div>`;
+      html += `<div class="outing-card unlocked" onclick="window.gameUI.enterOutingLocationUI('${loc.id}')"><div class="outing-icon">${loc.icon}</div><div class="outing-name">${loc.shortName || loc.name}</div><div class="outing-subtitle">${loc.name}</div><div class="outing-desc">${loc.description}</div><div class="outing-badge unlocked-badge">可前往 · 体力-1</div></div>`;
     }
     // 锁定地点
     for (const loc of lockedLoc) {
@@ -762,6 +828,18 @@ class GameUI {
     }
     html += '</div></div>';
     this.el.modalContent.innerHTML = html;
+  }
+
+  enterOutingLocationUI(locId) {
+    const result = this.game.enterOutingLocation(locId);
+    this.renderResources();
+    if (!result.success) {
+      if (result.msg) alert(result.msg);
+      return;
+    }
+    if (result.dead) return;
+    if (result.warning) alert(LOG_TEMPLATES.outingStaminaWarn);
+    this.enterLocation(locId);
   }
 
   enterLocation(locId) {
@@ -944,7 +1022,7 @@ class GameUI {
     // v2.4 天字号藏品展示
     const auctionInfo = this.game.getAuctionRefreshInfo();
     if (auctionInfo.stoneCollections && auctionInfo.stoneCollections.length > 0) {
-      html += '<div class="stone-collections"><div class="sc-title">💠 天字号藏品</div><div class="sc-grid">';
+      html += '<div class="stone-collections"><div class="sc-title">💠 稀世藏品</div><div class="sc-grid">';
       for (const colId of auctionInfo.stoneCollections) {
         const col = DUFANG_CONFIG.stone.collections[colId];
         if (col) html += `<div class="sc-card"><div class="sc-icon">${col.icon}</div><div class="sc-info"><div class="sc-name">${col.name}</div><div class="sc-desc">${col.desc}</div></div></div>`;
@@ -990,7 +1068,11 @@ class GameUI {
     const result = this.game.doStoneCut(tierId, true);
     if (result.success) {
       let html = `<div class="panel-card"><div class="panel-header"><h3>💎 黑市原石结果</h3><button class="panel-close" onclick="window.gameUI.renderDufangStone()">← 返回</button></div>`;
-      html += `<div class="stone-result heishi"><div class="stone-quality">${result.quality.icon} ${result.quality.name}</div><div class="stone-value">价值 ×${result.value} = ${result.silverGain.toLocaleString()}🪙</div><div class="stone-pity-count">保底计数：${result.pity}/${DUFANG_CONFIG.stone.pityThreshold}</div><button class="btn-sm primary" onclick="window.gameUI.renderDufangStone()" style="margin-top:12px;">继续</button></div>`;
+      html += `<div class="stone-result heishi"><div class="stone-quality">${result.quality.icon} ${result.quality.name}</div><div class="stone-value">价值 ×${result.value} = ${result.silverGain.toLocaleString()}🪙</div><div class="stone-pity-count">黑市保底：稀有玉及以上</div>`;
+      if (result.collectionDrop) {
+        html += `<div class="stone-collection-drop"><div class="scd-icon">${result.collectionDrop.icon}</div><div class="scd-title">天降奇珍！</div><div class="scd-name">${result.collectionDrop.name}</div><div class="scd-valuation">估价 ${result.collectionDrop.valuation.toLocaleString()}🪙</div></div>`;
+      }
+      html += `<button class="btn-sm primary" onclick="window.gameUI.renderDufangStone()" style="margin-top:12px;">继续</button></div>`;
       this.el.modalContent.innerHTML = html;
       this.renderResources();
     } else {
@@ -1045,7 +1127,7 @@ class GameUI {
     const purchaseCount = this.game.state.heishi.purchaseCount || 0;
     const nextChashaoPct = Math.min(100, Math.round((0.05 + purchaseCount * 0.10) * 100));
     let html = `<div class="panel-card"><div class="panel-header"><h3>🌑 地下黑市</h3><button class="panel-close" onclick="window.gameUI.renderOuting()">← 返回</button></div>`;
-    html += `<div class="heishi-info">⏱️ 下次刷新：${refreshInfo.nextRefreshStr}后（每${refreshInfo.stepsNeeded}步） | 黑市令持有：${this.game.getItemCount('heishiling')}个 | <span class="heishi-warning">⚠️ 下次购买查抄风险：${nextChashaoPct}%${purchaseCount > 0 ? ` (本轮已购 ${purchaseCount} 件)` : ''}</span></div>`;
+    html += `<div class="heishi-info">⏱️ 下次刷新：${refreshInfo.nextRefreshStr}后（每${refreshInfo.stepsNeeded}步） | 黑市令持有：${this.game.getItemCount('heishiling')}个 | <span class="heishi-warning">⚠️ 下次购买查抄风险：${nextChashaoPct}%${purchaseCount > 0 ? ` (连续 ${purchaseCount} 次未触发)` : ''}</span></div>`;
     // 强制刷新按钮
     const canRefresh = this.game.getResource('silver') >= HEISHI_CONFIG.forceRefreshCost;
     html += `<div class="heishi-actions"><button class="btn-sm warning" ${!canRefresh ? 'disabled' : ''} onclick="window.gameUI.forceRefreshHeishiUI()">💰 强制刷新商品 (${HEISHI_CONFIG.forceRefreshCost.toLocaleString()}🪙)</button></div>`;
@@ -1056,7 +1138,8 @@ class GameUI {
       for (const g of goods) {
         const canBuy = this.game.getResource('silver') >= g.currentPrice;
         const tierLabel = `T${g.tier}`;
-        html += `<div class="heishi-card tier${g.tier}"><div class="heishi-tier">${tierLabel}</div><div class="heishi-icon">${g.icon}</div><div class="heishi-name">${g.name}</div><div class="heishi-price">${g.currentPrice.toLocaleString()}🪙 <small class="heishi-mult">×${g.priceMultiplier.toFixed(1)}</small></div><button class="btn-sm primary" ${!canBuy ? 'disabled' : ''} onclick="window.gameUI.buyHeishiGoodUI('${g.id}')">买下</button></div>`;
+        const priceMultiplier = g.fixedPrice ? '' : ` <small class="heishi-mult">×${g.priceMultiplier.toFixed(1)}</small>`;
+        html += `<div class="heishi-card tier${g.tier}"><div class="heishi-tier">${tierLabel}</div><div class="heishi-icon">${g.icon}</div><div class="heishi-name">${g.name}</div><div class="heishi-price">${g.currentPrice.toLocaleString()}🪙${priceMultiplier}</div><button class="btn-sm primary" ${!canBuy ? 'disabled' : ''} onclick="window.gameUI.buyHeishiGoodUI('${g.id}')">买下</button></div>`;
       }
       html += '</div>';
     }
@@ -1206,25 +1289,23 @@ class GameUI {
         return c ? { ...c, source: 'stone' } : null;
       }).filter(Boolean)];
       for (const col of allCols) {
-        html += `<div class="ac-card ${col.source === 'stone' ? 'ac-stone' : ''}"><div class="ac-icon">${col.icon}</div><div class="ac-name">${col.name}</div><div class="ac-desc">${col.desc}</div><div class="ac-valuation">估价 ${col.valuation.toLocaleString()}🪙</div></div>`;
+        html += `<div class="ac-card ${col.source === 'stone' ? 'ac-stone' : ''}"><div class="ac-icon">${col.icon}</div><div class="ac-name">${col.name}</div><div class="ac-desc">${col.desc}</div><div class="ac-valuation">估价 ${(col.valuation || col.price || 0).toLocaleString()}🪙</div></div>`;
       }
       html += `</div></div>`;
     }
     // 拍品网格
     html += `<div class="auction-grid">`;
-    for (let i = 0; i < info.items ? this.game.state.auction.items.length : 0; i++) {
+    for (let i = 0; i < this.game.state.auction.items.length; i++) {
       const item = this.game.state.auction.items[i];
       const catLabel = item.category === 'collectibles' ? '收藏品' : item.category === 'protection' ? '保护' : item.category === 'rare' ? '稀有' : '消耗包';
       const catClass = item.category === 'collectibles' ? 'ac-cat-collectible' : item.category === 'protection' ? 'ac-cat-protection' : item.category === 'rare' ? 'ac-cat-rare' : 'ac-cat-consumable';
       html += `<div class="auction-item"><div class="ai-icon">${item.icon}</div><div class="ai-name">${item.name}</div><div class="ai-category ${catClass}">${catLabel}</div><div class="ai-price">${item.price.toLocaleString()}🪙</div><button class="btn-sm primary" onclick="window.gameUI.buyAuctionItemUI(${i})">一口价</button></div>`;
     }
     html += `</div>`;
-    // 黑市令通道
-    const htLeft = info.heishiTokenMax - info.heishiTokensBought;
-    html += `<div class="auction-heishi-channel"><div class="ahc-header">🎫 黑市令通道</div><div class="ahc-body"><div class="ahc-info">${AUCTION_CONFIG.heishiTokenPrice.toLocaleString()}🪙/个 · 本轮剩余 ${htLeft}/${info.heishiTokenMax}</div><button class="btn-sm ${htLeft > 0 ? 'primary' : ''}" ${htLeft <= 0 ? 'disabled' : ''} onclick="window.gameUI.buyAuctionHeishiTokenUI()">购入黑市令</button></div></div>`;
-    // 强制刷新按钮
-    const frLeft = info.forceRefreshMax - info.forceRefreshUsedToday;
-    html += `<div class="auction-force-refresh"><div class="afr-info">强制刷新：${AUCTION_CONFIG.forceRefreshCost.toLocaleString()}🪙 · 今日剩余 ${frLeft}/${info.forceRefreshMax} 次</div><button class="btn-sm ${frLeft > 0 ? 'warning' : ''}" ${frLeft <= 0 ? 'disabled' : ''} onclick="window.gameUI.forceRefreshAuctionUI()">💰 强制刷新</button></div>`;
+    // 强制刷新按钮（forceRefreshMax 为 Infinity 时不限次）
+    const frLeft = info.forceRefreshMax === Infinity ? '∞' : (info.forceRefreshMax - info.forceRefreshUsedToday);
+    const frMaxLabel = info.forceRefreshMax === Infinity ? '∞' : info.forceRefreshMax;
+    html += `<div class="auction-force-refresh"><div class="afr-info">强制刷新：${AUCTION_CONFIG.forceRefreshCost.toLocaleString()}🪙 · 今日剩余 ${frLeft}/${frMaxLabel} 次</div><button class="btn-sm warning" onclick="window.gameUI.forceRefreshAuctionUI()">💰 强制刷新</button></div>`;
     html += `</div></div>`;
     this.activePanel = 'auction';
     this.el.modalContent.innerHTML = html;
@@ -1242,16 +1323,6 @@ class GameUI {
 
   forceRefreshAuctionUI() {
     const result = this.game.forceRefreshAuction();
-    if (!result.success) {
-      if (result.msg) alert(result.msg);
-      return;
-    }
-    this.renderAuction();
-    this.renderResources();
-  }
-
-  buyAuctionHeishiTokenUI() {
-    const result = this.game.purchaseAuctionHeishiToken(1);
     if (!result.success) {
       if (result.msg) alert(result.msg);
       return;
@@ -1335,8 +1406,10 @@ class GameUI {
   renderMarket() {
     const prices = this.game.getMarketPrices();
     const refreshInfo = this.game.getMarketRefreshInfo();
+    const pricingInfo = this.game.getMarketPricingInfo();
     let html = `<div class="panel-card"><div class="panel-header"><h3>📊 商情交易</h3><button class="panel-close" onclick="window.gameUI.closePanel()">×</button></div>`;
     html += `<div class="market-info"><span>下一次行情更新：⏱️ ${refreshInfo.nextRefreshStr}后</span><span class="market-tip">每${refreshInfo.stepsNeeded}步刷新（声望越高越快）</span></div>`;
+    html += `<div class="market-info"><span>本轮计价资产：${pricingInfo.assetValue.toLocaleString()}🪙</span><span class="market-tip">资产倍率 ×${pricingInfo.assetMultiplier.toFixed(2)} · 本轮价格已锁定，下次刷新按最新资产重算</span></div>`;
 
     // 行情表格
     html += '<div class="market-table-header"><span class="mth-goods">货物</span><span class="mth-price">单价</span><span class="mth-hold">持有</span><span class="mth-actions">操作</span></div>';
@@ -1345,7 +1418,7 @@ class GameUI {
       const cls = gdata.multiplier >= 1.5 ? 'up' : gdata.multiplier <= 0.7 ? 'down' : '';
       const arrow = gdata.multiplier >= 1.5 ? '📈' : gdata.multiplier <= 0.7 ? '📉' : '➡️';
       const maxBuy = Math.max(0, GAME_CONFIG.marketMaxHolding - hold);
-      html += `<div class="market-row ${cls}"><span class="mr-goods">${gdata.icon} ${gdata.name}<span class="mr-mult">${arrow} ×${gdata.multiplier.toFixed(1)}</span></span><span class="mr-price">${gdata.price}🪙</span><span class="mr-hold">${hold > 0 ? `📦×${hold}` : '-'}</span><span class="mr-actions">`;
+      html += `<div class="market-row ${cls}"><span class="mr-goods">${gdata.icon} ${gdata.name}<span class="mr-mult">${arrow} ×${gdata.multiplier.toFixed(1)}</span></span><span class="mr-price">${gdata.price.toLocaleString()}🪙</span><span class="mr-hold">${hold > 0 ? `📦×${hold}` : '-'}</span><span class="mr-actions">`;
       if (maxBuy > 0) {
         html += `<input type="number" id="buyQty_${gid}" value="1" min="1" max="${maxBuy}" style="width:48px;text-align:center;font-size:0.85rem;padding:4px 2px;border:1px solid var(--ink-light);border-radius:6px;background:var(--bg-panel);color:var(--ink-primary);margin-right:4px;" title="输入买入数量">`;
         html += `<button class="btn-sm primary" onclick="window.gameUI.buyCommodityUI('${gid}')" title="买入指定数量">买入</button>`;

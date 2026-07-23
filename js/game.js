@@ -90,7 +90,7 @@ class GameEngine {
       // 批量出发（v2.4.1：一次点击跑 N 次）
       batchTravel: { remaining: 0, total: 0 },
       // 商情
-      market: { prices: {}, lastRefreshTimestamp: 0, lastRefreshStep: 0 },
+      market: { prices: {}, lastRefreshTimestamp: 0, lastRefreshStep: 0, assetValue: 0, assetMultiplier: 0 },
       // v2.2 黑市（步数刷新）
       heishi: { goods: [], prices: {}, lastRefreshTimestamp: 0, lastRefreshStep: 0, purchaseCount: 0 },
       // v2.2 盐场
@@ -280,7 +280,7 @@ class GameEngine {
     if (this.state.energyTimer) { clearInterval(this.state.energyTimer); this.state.energyTimer = null; }
     if (this.state.shopTimer) { clearInterval(this.state.shopTimer); this.state.shopTimer = null; }
     if (this.state.autoSaveTimer) { clearInterval(this.state.autoSaveTimer); this.state.autoSaveTimer = null; }
-    this.addLog(LOG_TEMPLATES.gameOverBurn, 'danger');
+    this.addLog(reason === 'outing' ? LOG_TEMPLATES.outingStaminaDeath : LOG_TEMPLATES.gameOverBurn, 'danger');
     this.emit('gameOver', { reason });
     this.autoSave();
   }
@@ -1111,6 +1111,10 @@ class GameEngine {
   useItem(itemId) {
     const def = ITEM_DEFINITIONS[itemId];
     if (!def) return { success: false, reason: 'not_found' };
+    // 黑市原石不可直接使用 — 必须去赌坊切开（不扣数量，避免 silent 吞掉）
+    if (itemId === 'heishi_yuanshi' || itemId === 'heishi_yuanshi_legend') {
+      return { success: false, reason: 'wrong_context', msg: '请前往赌坊切开原石' };
+    }
     // 检查使用条件
     if (def.condition) {
       for (const [key, cond] of Object.entries(def.condition)) {
@@ -1293,9 +1297,11 @@ class GameEngine {
   // v2.3 步数驱动刷新检查（每次行走后调用）
   checkStepRefresh() {
     const totalSteps = this.state.meta.totalTravels;
-    // 商情刷新
+    // 商情刷新：旧存档缺少商品或资产定价快照时立即补刷
     const marketStepsNeeded = this.getMarketRefreshSteps();
-    if (!this.state.market.lastRefreshStep || (totalSteps - this.state.market.lastRefreshStep) >= marketStepsNeeded) {
+    const hasAllMarketGoods = DAILY_MARKET_GOODS.every(g => Object.prototype.hasOwnProperty.call(this.state.market.prices, g.id));
+    const hasAssetPricing = Number.isFinite(this.state.market.assetMultiplier) && this.state.market.assetMultiplier >= 1;
+    if (!this.state.market.lastRefreshStep || !hasAllMarketGoods || !hasAssetPricing || (totalSteps - this.state.market.lastRefreshStep) >= marketStepsNeeded) {
       this.refreshMarket();
     }
     // 黑市刷新
@@ -1352,13 +1358,49 @@ class GameEngine {
 
   getDateStr() { return new Date().toISOString().slice(0, 10); }
 
+  getMarketAssetValue() {
+    let assetValue = Math.max(0, this.state.resources.silver || 0);
+    for (const shopId of Object.keys(SHOPS)) {
+      const recovery = this.getShopSellRecovery(shopId);
+      if (recovery) assetValue += recovery.recoveryAmount;
+    }
+    for (const field of this.state.saltFields) {
+      assetValue += Math.floor((field.purchasePrice || 0) * YANCHANG_CONFIG.abandonRecoveryRate);
+    }
+    for (const good of DAILY_MARKET_GOODS) {
+      const quantity = this.state.commodities[good.id] || 0;
+      if (quantity <= 0) continue;
+      const frozenPrice = this.state.market.prices[good.id]?.price || good.basePrice;
+      assetValue += frozenPrice * quantity;
+    }
+    return Number.isFinite(assetValue) ? Math.floor(assetValue) : Number.MAX_SAFE_INTEGER;
+  }
+
+  getMarketPricingInfo() {
+    return {
+      assetValue: this.state.market.assetValue || 0,
+      assetMultiplier: this.state.market.assetMultiplier || 1,
+    };
+  }
+
   refreshMarket() {
     const prices = {};
+    const assetValue = this.getMarketAssetValue();
+    const assetMultiplier = Math.min(100000, Math.max(1, Math.sqrt(Math.max(assetValue, 10000) / 10000)));
     for (const good of DAILY_MARKET_GOODS) {
-      const mult = 0.6 + Math.random() * 1.4; // v2.0: 波动 0.6~2.0
-      prices[good.id] = { price: Math.floor(good.basePrice * mult), multiplier: parseFloat(mult.toFixed(2)), name: good.name, icon: good.icon, basePrice: good.basePrice };
+      const minMultiplier = Math.max(0.05, 1 - good.volatility);
+      const multiplier = parseFloat((minMultiplier + Math.random() * good.volatility * 2).toFixed(2));
+      prices[good.id] = {
+        price: Math.max(1, Math.floor(good.basePrice * assetMultiplier * multiplier)),
+        multiplier,
+        name: good.name,
+        icon: good.icon,
+        basePrice: good.basePrice,
+      };
     }
     this.state.market.prices = prices;
+    this.state.market.assetValue = assetValue;
+    this.state.market.assetMultiplier = assetMultiplier;
     this.state.market.lastRefreshStep = this.state.meta.totalTravels;
     this.state.market.lastRefreshTimestamp = Date.now();
     this.addLog(LOG_TEMPLATES.marketUpdate, 'info');
@@ -1696,6 +1738,34 @@ class GameEngine {
     return result;
   }
 
+  enterOutingLocation(locId) {
+    if (this.state.gameOver) return { success: false, reason: 'game_over', dead: true };
+    const location = this.getUnlockedLocations().find(loc => loc.id === locId);
+    if (!location) return { success: false, reason: 'not_found' };
+    if (!location.unlocked) return { success: false, reason: 'locked', msg: '该地点尚未解锁' };
+
+    const staminaCost = GAME_CONFIG.outingStaminaCost;
+    if (this.state.resources.stamina <= 0) {
+      this.triggerGameOver('outing');
+      return { success: false, reason: 'no_stamina', dead: true };
+    }
+
+    this.state.resources.stamina = Math.max(0, this.state.resources.stamina - staminaCost);
+    this.addLog(LOG_TEMPLATES.outingEnter.replace('{name}', location.name).replace('{stamina}', staminaCost), 'info');
+    this.emit('resourceChange', { resource: 'stamina', amount: -staminaCost, newValue: this.state.resources.stamina });
+
+    const warning = this.state.resources.stamina === GAME_CONFIG.outingStaminaWarnThreshold;
+    if (warning) this.addLog(LOG_TEMPLATES.outingStaminaWarn, 'warning');
+    if (this.state.resources.stamina <= 0) {
+      this.triggerGameOver('outing');
+      return { success: true, location, warning: false, dead: true };
+    }
+
+    this.refreshActivity();
+    this.autoSave();
+    return { success: true, location, warning, dead: false };
+  }
+
   visitLocation(locationId) {
     const loc = LOCATIONS[locationId];
     if (!loc) return { success: false, reason: 'not_found' };
@@ -1949,43 +2019,61 @@ class GameEngine {
       qualityMod += 0.05;
     }
     // 加权随机
-    // 保底触发时，池子收紧到稀有玉及以上（{稀有, 极品, 传说}）：
-    //   - 排除废料/普通玉/良品玉，杜绝「pity 还出 1× 良品」的不爽体验；
-    //   - +25% 保底加成仍加到这三档上，让稀有玉最常见。
+    // 保底触发时，池子收紧到稀有玉及以上（{稀有, 极品, 传说}）。
     const qualityLevels = qualityTable.map(q => q.id);
     const rareIdx = qualityLevels.indexOf('rare');
     const goodIdx = qualityLevels.indexOf('good');
-    const roll = Math.random();
-    let cumulative = 0;
     let selectedQuality = qualityTable[0];
-    for (let i = 0; i < qualityTable.length; i++) {
-      const q = qualityTable[i];
-      // 保底激活时跳过低于稀有的品质（包括废料/普通玉/良品玉）
-      if (pityActive && rareIdx >= 0 && i < rareIdx) continue;
-      let adjustedChance = q.chance;
-      if (q.id !== 'waste') adjustedChance += qualityMod;
-      // 保底bonus只加到good及以上品质，避免膨胀低品质概率
-      if (i >= goodIdx && goodIdx >= 0) adjustedChance += pityBonus;
-      cumulative += adjustedChance;
-      if (roll < cumulative) { selectedQuality = q; break; }
+    if (isHeishiStone) {
+      // 黑市原石固定稀有以上；qualityMod 从稀有档转移到极品/传说档。
+      const weightedQualities = qualityTable.map(q => {
+        let weight = q.chance;
+        if (q.id === 'rare') weight = Math.max(0.01, weight - qualityMod);
+        else if (q.id === 'elite') weight += qualityMod * 0.6;
+        else if (q.id === 'legend') weight += qualityMod * 0.4;
+        return { quality: q, weight };
+      });
+      let roll = Math.random() * weightedQualities.reduce((sum, entry) => sum + entry.weight, 0);
+      for (const entry of weightedQualities) {
+        roll -= entry.weight;
+        if (roll <= 0) { selectedQuality = entry.quality; break; }
+      }
+    } else {
+      const roll = Math.random();
+      let cumulative = 0;
+      for (let i = 0; i < qualityTable.length; i++) {
+        const q = qualityTable[i];
+        if (pityActive && rareIdx >= 0 && i < rareIdx) continue;
+        let adjustedChance = q.chance;
+        if (q.id !== 'waste') adjustedChance += qualityMod;
+        if (i >= goodIdx && goodIdx >= 0) adjustedChance += pityBonus;
+        cumulative += adjustedChance;
+        if (roll < cumulative) { selectedQuality = q; break; }
+      }
+      if (cumulative === 0) selectedQuality = qualityTable[Math.max(0, rareIdx)];
     }
-    // 兜底：极端情况下（如概率全为0）保证至少有结果
-    if (cumulative === 0) selectedQuality = qualityTable[Math.max(0, rareIdx)];
-    // 判断是否为good及以上
+    // 保底计数规则：
+    //   - 废料/普通玉 (selectedIdx < goodIdx) → pity++（累计未出好玉）
+    //   - 良品玉 (selectedIdx == goodIdx) → 既不++也不清零（保持原样，良品不算"出好"也不触发清零）
+    //   - 稀有玉及以上 (selectedIdx > goodIdx) → pity=0（清零保底）
     const selectedIdx = qualityLevels.indexOf(selectedQuality.id);
     if (selectedIdx < goodIdx) {
       this.state.daily.dufangStonePity++;
-    } else {
+    } else if (selectedIdx > goodIdx) {
       this.state.daily.dufangStonePity = 0;
     }
+    // 良品玉：保持当前 pity 计数不变
     const silverGain = Math.floor(tier.price * selectedQuality.value);
     this.state.resources.silver += silverGain;
     this.addLog(LOG_TEMPLATES.dufangStoneResult.replace('{tier}', tier.name).replace('{quality}', selectedQuality.icon + selectedQuality.name).replace('{value}', selectedQuality.value).replace('{silver}', silverGain), 'success');
-    // v2.4 天字号藏品掉落
+    // v2.4 稀世藏品掉落：黑市原石概率高于天字号原石
     let collectionDrop = null;
-    if (tier.id === 'heaven') {
+    const collectionDropChance = isHeishiStone
+      ? (tierId === 'legend' ? DUFANG_CONFIG.stone.heishiLegendCollectionDropChance : DUFANG_CONFIG.stone.heishiCollectionDropChance)
+      : (tier.id === 'heaven' ? DUFANG_CONFIG.stone.collectionDropChance : 0);
+    if (collectionDropChance > 0) {
       const dropRoll = Math.random();
-      if (dropRoll < DUFANG_CONFIG.stone.collectionDropChance) {
+      if (dropRoll < collectionDropChance) {
         const unowned = Object.keys(DUFANG_CONFIG.stone.collections).filter(
           id => !this.state.auction.stoneCollections.includes(id)
         );
@@ -2217,8 +2305,8 @@ class GameEngine {
       }
       if (selectedIdx >= 0) {
         const g = pool[selectedIdx];
-        const priceMult = HEISHI_CONFIG.priceMultiplierMin + Math.random() * (HEISHI_CONFIG.priceMultiplierMax - HEISHI_CONFIG.priceMultiplierMin);
-        goods.push({ ...g, currentPrice: Math.floor(g.basePrice * priceMult), priceMultiplier: parseFloat(priceMult.toFixed(2)) });
+        const priceMult = g.fixedPrice ? 1 : HEISHI_CONFIG.priceMultiplierMin + Math.random() * (HEISHI_CONFIG.priceMultiplierMax - HEISHI_CONFIG.priceMultiplierMin);
+        goods.push({ ...g, currentPrice: g.fixedPrice ? g.basePrice : Math.floor(g.basePrice * priceMult), priceMultiplier: parseFloat(priceMult.toFixed(2)) });
         pool.splice(selectedIdx, 1);
       }
     }
@@ -2227,7 +2315,6 @@ class GameEngine {
     for (const g of goods) { this.state.heishi.prices[g.id] = g.currentPrice; }
     this.state.heishi.lastRefreshStep = this.state.meta.totalTravels;
     this.state.heishi.lastRefreshTimestamp = Date.now();
-    this.state.heishi.purchaseCount = 0; // 每次刷新重置购买计数
     this.addLog(LOG_TEMPLATES.heishiRefresh, 'info');
     this.emit('heishiRefreshed', goods);
     this.autoSave();
@@ -2295,7 +2382,8 @@ class GameEngine {
     const prevCount = this.state.heishi.purchaseCount || 0;
     const chashaoChance = Math.min(1.0, HEISHI_CONFIG.inspectRate + prevCount * HEISHI_CONFIG.purchaseInspectStep);
     let inspected = false, loss = 0, repGain = 0, decreeBlocked = false;
-    if (Math.random() < chashaoChance) {
+    const chashaoTriggered = Math.random() < chashaoChance;
+    if (chashaoTriggered) {
       if (this.checkConfiscationImmunity()) {
         decreeBlocked = true;
         this.addLog(LOG_TEMPLATES.auctionImperialDecreeBlock, 'success');
@@ -2309,7 +2397,8 @@ class GameEngine {
         this.addLog(`⚠️ 第${prevCount + 1}件购买触发查抄（${pct}%）！损失 ${loss.toLocaleString()} 两，声望+${repGain}`, 'danger');
       }
     }
-    this.state.heishi.purchaseCount = prevCount + 1;
+    // 刷新商品不会清零风险；触发查抄（包括被圣令挡下）后才重新从5%累积
+    this.state.heishi.purchaseCount = chashaoTriggered ? 0 : prevCount + 1;
     this.addLog(LOG_TEMPLATES.heishiBuy.replace('{icon}', good.icon).replace('{name}', good.name).replace('{cost}', good.currentPrice), 'success');
     // 移除已购买商品
     this.state.heishi.goods = this.state.heishi.goods.filter(g => g.id !== goodId);
@@ -2413,11 +2502,37 @@ class GameEngine {
 
   // ==================== v2.4 聚宝阁（拍卖）= ====================
   checkAuctionUnlock() {
+    // 兼容旧存档：关闭黑市令通道后移除尚未售出的黑市令拍品
+    this.state.auction.items = this.state.auction.items.filter(item => item.category !== 'heishi_token');
     if (!this.state.auction.unlocked && this.state.resources.reputation >= AUCTION_CONFIG.unlockReputation) {
       this.state.auction.unlocked = true;
       this.addLog(LOG_TEMPLATES.auctionUnlock, 'success');
       this.emit('auctionUnlocked');
     }
+  }
+
+  sellCollection(collectionId) {
+    let collection = AUCTION_COLLECTIBLES[collectionId];
+    let collectionList = this.state.auction.collections;
+    let source = 'auction';
+    if (!collection || !collectionList.includes(collectionId)) {
+      collection = DUFANG_CONFIG.stone.collections[collectionId];
+      collectionList = this.state.auction.stoneCollections;
+      source = 'stone';
+    }
+    const index = collectionList.indexOf(collectionId);
+    if (!collection || index < 0) return { success: false, reason: 'not_owned', msg: '未持有该藏品' };
+
+    const sellPrice = collection.valuation || collection.price || 0;
+    if (sellPrice <= 0) return { success: false, reason: 'no_value', msg: '该藏品无法出售' };
+    collectionList.splice(index, 1);
+    this.state.resources.silver += sellPrice;
+    if (source === 'stone') this.applyPermanentUpgrades();
+    this.addLog(`💰 出售藏品「${collection.icon}${collection.name}」，获得 ${sellPrice.toLocaleString()} 银两。`, 'success');
+    this.emit('collectionSold', { collectionId, collection, source, sellPrice });
+    this.emit('resourceChange', { resource: 'silver', amount: sellPrice, newValue: this.state.resources.silver });
+    this.autoSave();
+    return { success: true, collection, source, sellPrice };
   }
 
   getAuctionRefreshInfo() {
@@ -2433,8 +2548,7 @@ class GameEngine {
       nextRefreshStr: stepsLeft > 0 ? `${stepsLeft}步` : '即将刷新',
       forceRefreshUsedToday: this.state.auction.forceRefreshUsedToday,
       forceRefreshMax: AUCTION_CONFIG.forceRefreshDailyLimit,
-      heishiTokensBought: this.state.auction.heishiTokensBoughtThisRound,
-      heishiTokenMax: AUCTION_CONFIG.heishiTokenMaxPerRefresh,
+      items: this.state.auction.items,
       collections: this.state.auction.collections,
       stoneCollections: this.state.auction.stoneCollections,
     };
@@ -2442,74 +2556,108 @@ class GameEngine {
 
   refreshAuctionItems() {
     const items = [];
-    const poolCopy = [...AUCTION_CATEGORY_POOL];
-    for (let i = 0; i < AUCTION_CONFIG.itemsPerRefresh; i++) {
-      const category = this.weightedPick(poolCopy, 'prob');
-      let item = null;
-      if (category.name === 'collectible') {
-        const available = Object.values(AUCTION_COLLECTIBLES).filter(
-          c => !this.state.auction.collections.includes(c.id)
-        );
-        if (available.length > 0) {
-          const pick = available[Math.floor(Math.random() * available.length)];
-          item = {
-            id: `auction_col_${pick.id}`,
-            name: pick.name,
-            icon: pick.icon,
-            category: 'collectibles',
-            price: pick.price,
-            data: pick,
-          };
-        }
-      } else if (category.name === 'protection') {
-        const available = Object.values(PROTECTION_ITEMS).filter(p => {
-          const existing = this.state.backpack.items.find(bi => bi.id === p.id);
-          return !existing || existing.qty < p.maxStack;
-        });
-        if (available.length > 0) {
-          const pick = available[Math.floor(Math.random() * available.length)];
-          item = {
-            id: `auction_prot_${pick.id}_${Date.now()}`,
-            name: pick.name,
-            icon: pick.icon,
-            category: 'protection',
-            price: pick.price,
-            priceLabel: pick.priceLabel || `${pick.price}🪙`,
-            data: pick,
-          };
-        }
-      } else if (category.name === 'heishiToken') {
-        item = {
-          id: 'auction_heishi_token',
-          name: '黑市令',
-          icon: '🎫',
-          category: 'heishi_token',
-          price: AUCTION_CONFIG.heishiTokenPrice,
-          maxPerRefresh: AUCTION_CONFIG.heishiTokenMaxPerRefresh,
-        };
-      } else if (category.name === 'rareItem') {
-        const pick = AUCTION_RARE_ITEMS[Math.floor(Math.random() * AUCTION_RARE_ITEMS.length)];
-        const price = Math.floor(pick.originalPrice * AUCTION_CONFIG.rarePriceMarkup);
-        item = {
-          id: `auction_rare_${pick.id}_${Date.now()}`,
-          name: pick.name,
-          icon: pick.icon,
-          category: 'rare',
-          price,
-          data: pick,
-        };
-      } else if (category.name === 'consumablePack') {
-        const pick = AUCTION_CONSUMABLE_PACKS[Math.floor(Math.random() * AUCTION_CONSUMABLE_PACKS.length)];
-        item = {
-          id: `auction_pack_${pick.id}_${Date.now()}`,
-          name: pick.name,
-          icon: pick.icon,
-          category: 'consumable',
-          price: pick.price,
-          data: pick,
-        };
+    // 复制初始池（每次刷新独立抽签），用过的种类从 remaining 中移除，避免 4 个全是同一类
+    const allCategories = [...AUCTION_CATEGORY_POOL];
+    const slots = AUCTION_CONFIG.itemsPerRefresh;
+    // 预定义每个类别的填充函数 + 是否仍可用
+    const canProduce = (name) => {
+      // collectible 即使全收集也"可生成" — 用高价值稀有品替代
+      if (name === 'protection') return Object.values(PROTECTION_ITEMS).some(p => {
+        const existing = this.state.backpack.items.find(bi => bi.id === p.id);
+        return !existing || existing.qty < p.maxStack;
+      });
+      return true;
+    };
+    // 本轮已抽到的"具体 itemId"集合（跨 produce 调用共享），保证 4 个 slot 不会出现同一个具体物品
+    const pickedItemKeys = new Set();
+    // 判断某 itemId 当前是否"还能买"（永久道具未持有 + 堆叠型物品未堆满）
+    const isItemAvailable = (itemId) => {
+      const def = ITEM_DEFINITIONS[itemId];
+      if (!def) return false;
+      if (def.type === 'permanent' && this.state.backpack.purchasedPermanents.includes(itemId)) return false;
+      if (def.stackable) {
+        const existing = this.state.backpack.items.find(i => i.id === itemId);
+        if (existing && existing.quantity >= def.maxStack) return false;
       }
-      if (item) items.push(item);
+      return true;
+    };
+    const produce = (category) => {
+      if (category.name === 'collectible') {
+        const available = Object.values(AUCTION_COLLECTIBLES).filter(c => !this.state.auction.collections.includes(c.id) && !pickedItemKeys.has('col:' + c.id));
+        if (available.length === 0) {
+          // 收藏品已集齐 → 出高价值"补送"：从 AUCTION_RARE_ITEMS 中筛选高价材料（≥1500🪙），且排除已持有/堆叠满的物品
+          const highValue = AUCTION_RARE_ITEMS.filter(r => {
+            if (r.originalPrice < 1500) return false;
+            if (pickedItemKeys.has('rare:' + r.itemId)) return false;
+            return isItemAvailable(r.itemId);
+          });
+          if (highValue.length === 0) return null;
+          const pick = this.weightedPick(highValue, 'weight');
+          pickedItemKeys.add('rare:' + pick.itemId);
+          const def = ITEM_DEFINITIONS[pick.itemId];
+          const price = Math.floor(pick.originalPrice * AUCTION_CONFIG.rarePriceMarkup);
+          return { id: `auction_col_bonus_${pick.itemId}_${Date.now()}_${Math.floor(Math.random()*1e6)}`, name: (def ? def.name : pick.itemId) + '·珍藏', icon: def ? def.icon : '🎁', category: 'collectibles', price, priceLabel: `${price}🪙`, data: pick, isBonus: true };
+        }
+        const pick = this.weightedPick(available, 'weight');
+        pickedItemKeys.add('col:' + pick.id);
+        return { id: `auction_col_${pick.id}_${Date.now()}_${Math.floor(Math.random()*1e6)}`, name: pick.name, icon: pick.icon, category: 'collectibles', price: pick.price, data: pick };
+      }
+      if (category.name === 'protection') {
+        const available = Object.values(PROTECTION_ITEMS).filter(p => {
+          if (pickedItemKeys.has('prot:' + p.id)) return false;
+          return isItemAvailable(p.id);
+        });
+        if (available.length === 0) return null;
+        const pick = available[Math.floor(Math.random() * available.length)];
+        pickedItemKeys.add('prot:' + pick.id);
+        return { id: `auction_prot_${pick.id}_${Date.now()}_${Math.floor(Math.random()*1e6)}`, name: pick.name, icon: pick.icon, category: 'protection', price: pick.price, priceLabel: `${pick.price}🪙`, data: pick };
+      }
+      if (category.name === 'rareItem') {
+        // 过滤掉已持有/堆叠满的物品 + 本轮已抽过的 item
+        const available = AUCTION_RARE_ITEMS.filter(r => {
+          if (pickedItemKeys.has('rare:' + r.itemId)) return false;
+          return isItemAvailable(r.itemId);
+        });
+        if (available.length === 0) return null;
+        const pick = this.weightedPick(available, 'weight');
+        pickedItemKeys.add('rare:' + pick.itemId);
+        const price = Math.floor(pick.originalPrice * AUCTION_CONFIG.rarePriceMarkup);
+        const def = ITEM_DEFINITIONS[pick.itemId];
+        return { id: `auction_rare_${pick.itemId}_${Date.now()}_${Math.floor(Math.random()*1e6)}`, name: def ? def.name : pick.itemId, icon: def ? def.icon : '📦', category: 'rare', price, data: pick };
+      }
+      if (category.name === 'consumablePack') {
+        const available = AUCTION_CONSUMABLE_PACKS.filter(p => !pickedItemKeys.has('pack:' + p.id));
+        if (available.length === 0) return null;
+        const pick = this.weightedPick(available, 'weight');
+        pickedItemKeys.add('pack:' + pick.id);
+        return { id: `auction_pack_${pick.id}_${Date.now()}_${Math.floor(Math.random()*1e6)}`, name: pick.name, icon: pick.icon, category: 'consumable', price: pick.price, data: pick };
+      }
+      return null;
+    };
+    // 收集阶段：roll 出 4 个种类（尽量不重复），某个类用尽则跳过；最后兜底
+    const usedCategories = new Set();
+    let remainingPool = allCategories.map(c => ({ ...c }));
+    let safety = 0;
+    while (items.length < slots && safety++ < 50) {
+      if (remainingPool.length === 0) {
+        // 所有种类都已抽过且某些抽空 → 用兜底（rareItem 永远可生成）
+        remainingPool = [{ name: 'rareItem', prob: 1 }];
+      }
+      const category = this.weightedPick(remainingPool, 'prob');
+      if (!canProduce(category.name)) {
+        // 该类已抽空，从剩余池中移除，避免重复 roll 浪费
+        remainingPool = remainingPool.filter(c => c.name !== category.name);
+        continue;
+      }
+      const item = produce(category);
+      if (item) {
+        items.push(item);
+        usedCategories.add(category.name);
+        // 同类只出一次（保证 4 个 slot 种类分散），从 remaining 中移除
+        remainingPool = remainingPool.filter(c => c.name !== category.name);
+      } else {
+        remainingPool = remainingPool.filter(c => c.name !== category.name);
+      }
     }
     this.state.auction.items = items;
     this.state.auction.lastRefreshStep = this.state.meta.totalTravels;
@@ -2542,12 +2690,18 @@ class GameEngine {
     this.state.resources.silver -= item.price;
     // 根据类别处理
     if (item.category === 'collectibles') {
-      if (this.state.auction.collections.includes(item.data.id)) {
-        this.state.resources.silver += item.price;
-        return { success: false, reason: 'already_owned' };
+      // 收藏品已集齐时的"珍藏"替代物：直接入背包，不入 collections
+      if (item.isBonus) {
+        this.addItem(item.data.itemId, 1);
+        this.addLog(LOG_TEMPLATES.auctionBuy.replace('{name}', `${item.icon}${item.name}`).replace('{price}', item.price.toLocaleString()), 'success');
+      } else {
+        if (this.state.auction.collections.includes(item.data.id)) {
+          this.state.resources.silver += item.price;
+          return { success: false, reason: 'already_owned' };
+        }
+        this.state.auction.collections.push(item.data.id);
+        this.addLog(LOG_TEMPLATES.auctionBuy.replace('{name}', `${item.icon}${item.name}`).replace('{price}', item.price.toLocaleString()), 'success');
       }
-      this.state.auction.collections.push(item.data.id);
-      this.addLog(LOG_TEMPLATES.auctionBuy.replace('{name}', `${item.icon}${item.name}`).replace('{price}', item.price.toLocaleString()), 'success');
     } else if (item.category === 'protection') {
       const existing = this.state.backpack.items.find(bi => bi.id === item.data.id);
       if (existing && existing.qty >= item.data.maxStack) {
@@ -2592,24 +2746,6 @@ class GameEngine {
     this.addLog(LOG_TEMPLATES.auctionForceRefresh, 'info');
     this.refreshAuctionItems();
     return { success: true };
-  }
-
-  purchaseAuctionHeishiToken(qty = 1) {
-    if (!this.state.auction.unlocked) return { success: false, reason: 'locked' };
-    qty = Math.max(1, Math.min(qty, AUCTION_CONFIG.heishiTokenMaxPerRefresh - this.state.auction.heishiTokensBoughtThisRound));
-    if (qty <= 0) return { success: false, reason: 'limit', msg: LOG_TEMPLATES.auctionHeishiTokenLimit.replace('{max}', AUCTION_CONFIG.heishiTokenMaxPerRefresh) };
-    const totalPrice = AUCTION_CONFIG.heishiTokenPrice * qty;
-    if (this.state.resources.silver < totalPrice) return { success: false, reason: 'no_silver', msg: LOG_TEMPLATES.auctionNoSilver };
-    if (this.state.backpack.items.length >= this.state.backpack.maxSlots) {
-      return { success: false, reason: 'bag_full', msg: LOG_TEMPLATES.auctionBagFull };
-    }
-    this.state.resources.silver -= totalPrice;
-    this.addItem('heishiling', qty);
-    this.state.auction.heishiTokensBoughtThisRound += qty;
-    this.addLog(LOG_TEMPLATES.auctionHeishiTokenBuy.replace('{quantity}', qty).replace('{price}', totalPrice.toLocaleString()), 'success');
-    this.emit('auctionHeishiBought', { qty, price: totalPrice });
-    this.autoSave();
-    return { success: true, qty, price: totalPrice };
   }
 
   checkConfiscationImmunity() {

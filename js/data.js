@@ -18,6 +18,10 @@ const GAME_CONFIG = {
   energyPerRecovery: 1,
   energyPerTravel: 1,
 
+  // 外出探索
+  outingStaminaCost: 1,
+  outingStaminaWarnThreshold: 1,
+
   // 核心循环
   travelDurationMin: 3000,
   travelDurationMax: 8000,
@@ -253,6 +257,11 @@ const ITEM_DEFINITIONS = {
     description:'雪山之巅的参王，体力上限永久+50', effect:{staminaMaxBonus:50}, price:6000, stackable:false, maxStack:1,
     useContext:['any'], maxPurchase:1, prestigeOnly:true,
   },
+  yanshoudan: {
+    id:'yanshoudan', name:'延寿丹', icon:'🧪', rarity:'rare', type:'permanent', category:'stamina_max',
+    description:'延年益寿，体力上限永久+30', effect:{staminaMaxBonus:30}, price:45000, stackable:false, maxStack:1,
+    useContext:['any'], maxPurchase:1,
+  },
   // --- 永久型-精力上限 ---
   juqidan: {
     id:'juqidan', name:'聚气丹', icon:'🔮', rarity:'rare', type:'permanent', category:'energy_max',
@@ -273,6 +282,16 @@ const ITEM_DEFINITIONS = {
   yucishangpai: {
     id:'yucishangpai', name:'御赐商牌', icon:'🏅', rarity:'legendary', type:'permanent', category:'shangtu_cap',
     description:'御赐金牌，每轮商途值上限永久+100', effect:{shangtuCapBonus:100}, price:8000, stackable:false, maxStack:1,
+    useContext:['any'], maxPurchase:1, prestigeOnly:true,
+  },
+  jinsuanpan: {
+    id:'jinsuanpan', name:'金算盘', icon:'🧮', rarity:'rare', type:'permanent', category:'shop_output',
+    description:'掌柜的祖传金算盘，所有店铺产出永久+5%', effect:{shopOutputBoost:0.05}, price:8000, stackable:false, maxStack:1,
+    useContext:['any'], maxPurchase:1,
+  },
+  zhenlianshi: {
+    id:'zhenlianshi', name:'镇店石', icon:'🪨', rarity:'legendary', type:'permanent', category:'shop_output',
+    description:'商海奇石，所有店铺产出永久+10%（重置后保留）', effect:{shopOutputBoost:0.10}, price:18000, stackable:false, maxStack:1,
     useContext:['any'], maxPurchase:1, prestigeOnly:true,
   },
   // --- 特殊道具 ---
@@ -304,12 +323,12 @@ const ITEM_DEFINITIONS = {
   },
   heishi_yuanshi: {
     id:'heishi_yuanshi', name:'黑市原石', icon:'💎', rarity:'rare', type:'special', category:'heishi',
-    description:'来自地下黑市的神秘原石，品质比普通原石更高。可在赌坊切开', effect:{}, price:0, stackable:true, maxStack:5,
+    description:'来自地下黑市的神秘原石，保底开出稀有玉，并有更高概率开出稀世藏品。可在赌坊切开', effect:{}, price:0, stackable:true, maxStack:5,
     useContext:['any'],
   },
   heishi_yuanshi_legend: {
     id:'heishi_yuanshi_legend', name:'黑市原石(传说)', icon:'🔮', rarity:'legendary', type:'special', category:'heishi',
-    description:'地下黑市的传说级原石，品质极高。可在赌坊切开', effect:{}, price:0, stackable:true, maxStack:3,
+    description:'地下黑市的传说级原石，保底开出稀有玉，开出稀世藏品的概率更高。可在赌坊切开', effect:{}, price:0, stackable:true, maxStack:3,
     useContext:['any'],
   },
 };
@@ -371,9 +390,7 @@ const AUCTION_CONFIG = {
   unlockReputation: 300,
   itemsPerRefresh: 4,
   forceRefreshCost: 100000,
-  forceRefreshDailyLimit: 2,
-  heishiTokenPrice: 8000,
-  heishiTokenMaxPerRefresh: 3,
+  forceRefreshDailyLimit: Infinity,
   rarePriceMarkup: 1.5,
 };
 
@@ -402,6 +419,9 @@ const AUCTION_RARE_ITEMS = [
   { itemId:'juqidan', weight:8, originalPrice:1500 }, { itemId:'shanglutongdie', weight:8, originalPrice:3000 },
   { itemId:'xueshanshenwang', weight:5, originalPrice:6000 }, { itemId:'tianyuandan', weight:5, originalPrice:4000 },
   { itemId:'yucishangpai', weight:5, originalPrice:8000 }, { itemId:'huaxianfu', weight:7, originalPrice:500 },
+  { itemId:'yanshoudan', weight:6, originalPrice:45000 },
+  { itemId:'jinsuanpan', weight:7, originalPrice:8000 }, { itemId:'zhenlianshi', weight:3, originalPrice:18000 },
+  { itemId:'heishi_yuanshi', weight:4, originalPrice:500000 }, { itemId:'heishi_yuanshi_legend', weight:2, originalPrice:500000 },
 ];
 
 const AUCTION_CONSUMABLE_PACKS = [
@@ -412,9 +432,8 @@ const AUCTION_CONSUMABLE_PACKS = [
 ];
 
 const AUCTION_CATEGORY_POOL = [
-  { name:'collectible', prob:0.25 }, { name:'protection', prob:0.10 },
-  { name:'heishiToken', prob:0.15 }, { name:'rareItem', prob:0.30 },
-  { name:'consumablePack', prob:0.20 },
+  { name:'collectible', prob:0.40 }, { name:'protection', prob:0.12 },
+  { name:'rareItem', prob:0.30 }, { name:'consumablePack', prob:0.18 },
 ];
 
 // ==================== 酒楼宴请系统（v2.0） ====================
@@ -453,13 +472,13 @@ const HEISHI_GOODS = [
   { id:'heishi_t2a', tier:2, name:'千年人参', icon:'🫚', basePrice:5000, chance:0.08, itemReward:{id:'qiannianrenshen',qty:1} },
   { id:'heishi_t2b', tier:2, name:'聚气丹', icon:'🔮', basePrice:4000, chance:0.08, itemReward:{id:'juqidan',qty:1} },
   { id:'heishi_t2c', tier:2, name:'商路通牒', icon:'📋', basePrice:6000, chance:0.07, itemReward:{id:'shanglutongdie',qty:1} },
-  { id:'heishi_t2d', tier:2, name:'黑市原石', icon:'💎', basePrice:3000, chance:0.07, itemReward:{id:'heishi_yuanshi',qty:1} },
+  { id:'heishi_t2d', tier:2, name:'黑市原石', icon:'💎', basePrice:500000, fixedPrice:true, chance:0.07, itemReward:{id:'heishi_yuanshi',qty:1} },
   // T3 传说 (8%) — Prestige加成道具（原需 Prestige≥3，现全时段可见）
   { id:'heishi_t3a', tier:3, name:'雪山参王', icon:'🏔️', basePrice:30000, chance:0.04, itemReward:{id:'xueshanshenwang',qty:1} },
   { id:'heishi_t3b', tier:3, name:'天元丹', icon:'💠', basePrice:25000, chance:0.04, itemReward:{id:'tianyuandan',qty:1} },
   // T4 神器 (2%) — 限定道具（原需 Prestige≥5，现全时段可见）
   { id:'heishi_t4a', tier:4, name:'御赐商牌', icon:'🏅', basePrice:80000, chance:0.01, itemReward:{id:'yucishangpai',qty:1} },
-  { id:'heishi_t4b', tier:4, name:'黑市原石(传说)', icon:'🔮', basePrice:50000, chance:0.01, itemReward:{id:'heishi_yuanshi_legend',qty:1} },
+  { id:'heishi_t4b', tier:4, name:'黑市原石(传说)', icon:'🔮', basePrice:500000, fixedPrice:true, chance:0.01, itemReward:{id:'heishi_yuanshi_legend',qty:1} },
 ];
 // ==================== 医馆配置（v2.1） ====================
 const YIGUAN_CONFIG = {
@@ -540,16 +559,13 @@ const DUFANG_CONFIG = {
       { id:'elite', name:'极品玉', icon:'🟡', value:4.0, chance:0.07 },
       { id:'legend', name:'传说玉', icon:'🌟', value:10.0, chance:0.03 },
     ],
-    // 保底：连续5次未出good以上，下次+25%概率
+    // 保底：连续5次出废料/普通玉（良品玉不++也不清零），下次+25%概率
     pityThreshold: 5, pityBonus: 0.25,
-    // 黑市原石更优概率表 (V2-16)
+    // 黑市原石保底稀有玉，传说原石的高品质权重更高
     heishiQualities: [
-      { id:'waste', name:'废料', icon:'🗑️', value:0.2, chance:0.15 },
-      { id:'common', name:'普通玉', icon:'🟢', value:0.5, chance:0.18 },
-      { id:'good', name:'良品玉', icon:'🔵', value:1.0, chance:0.22 },
-      { id:'rare', name:'稀有玉', icon:'🟣', value:2.0, chance:0.22 },
-      { id:'elite', name:'极品玉', icon:'🟡', value:4.0, chance:0.15 },
-      { id:'legend', name:'传说玉', icon:'🌟', value:10.0, chance:0.08 },
+      { id:'rare', name:'稀有玉', icon:'🟣', value:2.0, chance:0.55 },
+      { id:'elite', name:'极品玉', icon:'🟡', value:4.0, chance:0.30 },
+      { id:'legend', name:'传说玉', icon:'🌟', value:10.0, chance:0.15 },
     ],
     // 天字号原石专属概率表（v2.4）— 10万银两
     heavenQualities: [
@@ -561,8 +577,10 @@ const DUFANG_CONFIG = {
       { id:'legend', name:'传说玉', icon:'🌟', value:10.0, chance:0.15 },
       { id:'mythic', name:'天命神玉', icon:'✨', value:25.0, chance:0.05 },
     ],
-    // 天字号藏品（1%从10w原石掉落）
+    // 稀世藏品掉落率：天字号1%，黑市原石5%，黑市传说原石10%
     collectionDropChance: 0.01,
+    heishiCollectionDropChance: 0.05,
+    heishiLegendCollectionDropChance: 0.10,
     collections: {
       jade_emperor: { id:'jade_emperor', name:'帝王绿翡翠', icon:'💚', valuation:10000000, desc:'天字号原石出产，持有即生效：赌石≥良品概率+5%', effect:{ type:'stoneQualityBoost', value:0.05 } },
       jade_muttonFat: { id:'jade_muttonFat', name:'和田羊脂白玉', icon:'🤍', valuation:10000000, desc:'天字号原石出产，持有即生效：所有店铺产出+3%', effect:{ type:'shopOutputBoost', value:0.03 } },
@@ -666,12 +684,18 @@ const ITEM_SHOP_BINDING = {
 };
 
 const DAILY_MARKET_GOODS = [
-  { id:'silk',     name:'丝绸',   icon:'🧵', basePrice:100, volatility:0.4 },
-  { id:'tea',      name:'茶叶',   icon:'🍵', basePrice:80,  volatility:0.3 },
-  { id:'porcelain',name:'瓷器',   icon:'🏺', basePrice:120, volatility:0.5 },
-  { id:'grain',    name:'粮食',   icon:'🌾', basePrice:50,  volatility:0.2 },
-  { id:'herb',     name:'药材',   icon:'🌿', basePrice:90,  volatility:0.35 },
-  { id:'silkroad', name:'西域香料',icon:'🕌', basePrice:200, volatility:0.6 },
+  { id:'silk',       name:'丝绸',     icon:'🧵', basePrice:100, volatility:0.40 },
+  { id:'tea',        name:'茶叶',     icon:'🍵', basePrice:80,  volatility:0.30 },
+  { id:'porcelain',  name:'瓷器',     icon:'🏺', basePrice:120, volatility:0.50 },
+  { id:'grain',      name:'粮食',     icon:'🌾', basePrice:50,  volatility:0.20 },
+  { id:'herb',       name:'药材',     icon:'🌿', basePrice:90,  volatility:0.35 },
+  { id:'silkroad',   name:'西域香料', icon:'🕌', basePrice:200, volatility:0.60 },
+  { id:'salt',       name:'青盐',     icon:'🧂', basePrice:60,  volatility:0.25 },
+  { id:'wine',       name:'美酒',     icon:'🍶', basePrice:110, volatility:0.35 },
+  { id:'timber',     name:'木材',     icon:'🪵', basePrice:140, volatility:0.40 },
+  { id:'lacquerware',name:'漆器',     icon:'🏮', basePrice:180, volatility:0.45 },
+  { id:'jade',       name:'璞玉',     icon:'💎', basePrice:300, volatility:0.60 },
+  { id:'horse',      name:'良驹',     icon:'🐎', basePrice:400, volatility:0.55 },
 ];
 
 // ==================== 成就定义 ====================
@@ -995,6 +1019,9 @@ const EVENT_POOL = [
 // ==================== 日志模板 ====================
 const LOG_TEMPLATES = {
   travelStart: '商队启程，踏上新的商途...',
+  outingEnter: '🏯 前往{name}，体力-{stamina}。',
+  outingStaminaWarn: '⚠️ 体力仅剩1点！再次外出将会死亡！',
+  outingStaminaDeath: '💀 外出途中体力耗尽，掌柜倒下了...游戏结束！',
   travelEnd_event: '行至半途，前方有人影晃动——',
   roundComplete: '本轮商途圆满结束！获得完成奖励：商途值+50，银两+30！',
   staminaZero: '体力耗尽，商队不得不在驿站休整。本轮商途结束。',
@@ -1064,6 +1091,7 @@ const LOG_TEMPLATES = {
   burnBloodNotEnough: '体力不足，无法燃烧精血！',
   burnBloodMaxExceed: '超出剩余可燃烧上限！',
   gameOverBurn: '💀 燃烧精血过度，体力枯竭，掌柜倒下了...游戏结束！',
+  gameOverOutingDesc: '外出奔波耗尽了最后一丝体力，掌柜倒在了途中...',
   burnBloodLifetimeExceed: '🩸 整局游戏最多燃烧100点精血，已达上限！',
   gameOverTitle: '游戏结束',
   gameOverDesc: '燃烧精血耗尽了最后一丝体力，掌柜的倒在了商铺中...',
