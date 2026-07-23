@@ -116,15 +116,22 @@ body::after{content:'';position:fixed;top:0;left:0;right:0;bottom:0;
 .travel-progress .progress-text{color:var(--ink-muted);font-size:0.9rem}
 
 /* ==================== 出发按钮 ==================== */
-.travel-btn-container{text-align:center;padding:var(--space-md)}
+.travel-btn-container{text-align:center;padding:var(--space-md);display:flex;justify-content:center;gap:var(--space-md);flex-wrap:wrap}
 .travel-btn{padding:var(--space-md) var(--space-2xl);font-family:var(--font-heading);font-size:1.3rem;font-weight:bold;background:linear-gradient(135deg,var(--red-primary),var(--red-dark));color:var(--bg-paper-light);border:none;border-radius:50px;cursor:pointer;transition:all var(--transition-normal);box-shadow:0 4px 20px var(--red-glow);position:relative;overflow:hidden}
+.travel-btn.fast-travel{background:linear-gradient(135deg,#b8860b,#8b6914);box-shadow:0 4px 20px rgba(184,134,11,0.4);font-size:1.15rem;padding:var(--space-sm) var(--space-xl)}
+.travel-btn.fast-travel:not(:disabled):hover{box-shadow:0 8px 30px rgba(184,134,11,0.55)}
+.travel-btn.fast-travel:disabled{background:var(--ink-light);color:var(--ink-muted)}
 .travel-btn::after{content:'';position:absolute;top:-50%;left:-50%;width:200%;height:200%;background:radial-gradient(circle,rgba(255,255,255,0.2),transparent 60%);opacity:0;transition:opacity 0.3s}
 .travel-btn:hover{transform:translateY(-2px);box-shadow:0 8px 30px var(--red-glow)}
 .travel-btn:hover::after{opacity:1}
 .travel-btn:active{transform:scale(0.95)}
 .travel-btn:disabled{background:var(--ink-light);box-shadow:none;cursor:not-allowed;transform:none}
+/* v2.4.1 批量出发激活态：警告色 + 停止动画 */
+.travel-btn.batch-active{background:linear-gradient(135deg,#8b5a2b,#5c3a1e);box-shadow:0 4px 20px rgba(139,90,43,0.5);animation:none}
+.travel-btn.batch-active:hover{background:linear-gradient(135deg,#a06a32,#6e4520);transform:translateY(-2px)}
 /* 出发按钮呼吸动画 */
 .travel-btn:not(:disabled){animation:travelBreathe 3s ease-in-out infinite}
+.travel-btn.batch-active{animation:none}
 @keyframes travelBreathe{0%,100%{box-shadow:0 4px 20px var(--red-glow)}50%{box-shadow:0 6px 28px rgba(196,30,58,0.45)}}
 /* 按钮波纹 */
 .travel-btn .ripple{position:absolute;border-radius:50%;background:rgba(255,255,255,0.35);transform:scale(0);animation:rippleEffect 0.6s ease-out;pointer-events:none}

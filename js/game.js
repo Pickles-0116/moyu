@@ -87,10 +87,12 @@ class GameEngine {
         dufangQuizDone: false,
         dufangStonePity: 0,
       },
+      // 批量出发（v2.4.1：一次点击跑 N 次）
+      batchTravel: { remaining: 0, total: 0 },
       // 商情
       market: { prices: {}, lastRefreshTimestamp: 0, lastRefreshStep: 0 },
       // v2.2 黑市（步数刷新）
-      heishi: { goods: [], prices: {}, lastRefreshTimestamp: 0, lastRefreshStep: 0 },
+      heishi: { goods: [], prices: {}, lastRefreshTimestamp: 0, lastRefreshStep: 0, purchaseCount: 0 },
       // v2.2 盐场
       saltFields: [],
       // v2.2 供奉
@@ -157,6 +159,8 @@ class GameEngine {
     this.calculateOfflineEarnings();
     this.startTimers();
     this.updateTutorialState();
+    // v2.4: 兼容旧存档加载时声望已≥300但auction.unlocked未翻起的情况
+    this.checkAuctionUnlock();
     // v2.3: 如果存档中gameOver=true，通知UI显示游戏结束界面
     if (this.state.gameOver) {
       setTimeout(() => this.emit('gameOver', { reason: 'load' }), 100);
@@ -322,6 +326,92 @@ class GameEngine {
   }
 
   // ==================== 核心循环 ====================
+  /** 批量出发（一次点击跑 N 次） */
+  startBatchTravel(count) {
+    if (!this.canTravel()) return false;
+    this.state.batchTravel.remaining = count;
+    this.state.batchTravel.total = count;
+    this.addLog(`⚡ 启动自动出发，共 ${count} 次（中途精力/体力不足将自动停止）`, 'success');
+    this.emit('batchTravelStart', { total: count });
+    return this.startTravel();
+  }
+
+  /** 检查快速行商前置条件 */
+  canFastTravel() {
+    if (this.state.gameOver) return { ok: false, reason: 'game_over', msg: '游戏已结束' };
+    if (this.state.journey.active) return { ok: false, reason: 'in_travel', msg: '正在行进中...' };
+    if (!this.state.backpack.purchasedPermanents.includes(FAST_TRAVEL_CONFIG.requiredPermanent)) {
+      return { ok: false, reason: 'no_perm', msg: `需要持有「御赐商牌」才能快速行商` };
+    }
+    if (this.state.energy.current < FAST_TRAVEL_CONFIG.energyCost) {
+      return { ok: false, reason: 'no_energy', msg: `精力不足，需 ${FAST_TRAVEL_CONFIG.energyCost} 点精力` };
+    }
+    return { ok: true };
+  }
+
+  /** 快速行商（御赐商牌专属）：一次性扣精力，累加 totalTravels 触发商情/黑市/拍卖场刷新，累加商途值 */
+  startFastTravel() {
+    const can = this.canFastTravel();
+    if (!can.ok) return { success: false, reason: can.reason, msg: can.msg };
+
+    const count = FAST_TRAVEL_CONFIG.count;
+    const energyCost = FAST_TRAVEL_CONFIG.energyCost;
+
+    // 计算商途值（参照 triggerEvent 基础值 + 当前路段倍率，不套用临时加成道具）
+    const road = ROADS[this.state.journey.currentRoad];
+    const roadMult = road ? road.outputMultiplier : 1.0;
+    const shangtuBase = Math.floor(5 * roadMult);
+
+    // 1) 一次性扣精力
+    this.state.energy.current = Math.max(0, this.state.energy.current - energyCost);
+
+    // 2) 累加 totalTravels + 每次循环检查刷新（这样跨阈值时多次刷新）
+    for (let i = 0; i < count; i++) {
+      this.state.meta.totalTravels++;
+      this.checkStepRefresh();
+    }
+
+    // 3) 商途值累计（参照 triggerEvent 软上限规则）
+    let cur = this.state.journey.roundShangtu;
+    const cap = this.state.journey.roundShangtuMax;
+    let totalShangtuGain = 0;
+    for (let i = 0; i < count; i++) {
+      if (cur < cap) {
+        cur++;
+        totalShangtuGain += shangtuBase;
+      } else {
+        totalShangtuGain += GAME_CONFIG.shangtuOverflowPerStep;
+      }
+    }
+    this.state.journey.roundShangtu = cur;
+    if (totalShangtuGain > 0) {
+      this.modifyResource('shangtu', totalShangtuGain);
+    }
+
+    this.addLog(`⚡ 御赐商牌快速行商 ${count} 次！精力-${energyCost} | 商情/黑市/拍卖场已自动刷新 | 商途值+${totalShangtuGain}`, 'success');
+    this.emit('energyChange', this.getEnergyStatus());
+    this.autoSave();
+    return { success: true, count, energyCost, totalShangtuGain };
+  }
+
+  /** 终止批量出发 */
+  stopBatchTravel() {
+    if (this.state.batchTravel.remaining <= 0) return;
+    const stopped = this.state.batchTravel.total - this.state.batchTravel.remaining;
+    this.state.batchTravel.remaining = 0;
+    this.state.batchTravel.total = 0;
+    this.addLog(`⏹ 已停止自动出发（已行进 ${stopped} 次）`, 'warning');
+    this.emit('batchTravelStop', { stopped });
+  }
+  isBatchTravelActive() { return this.state.batchTravel.remaining > 0; }
+  getBatchTravelInfo() {
+    return {
+      remaining: this.state.batchTravel.remaining,
+      total: this.state.batchTravel.total,
+      done: this.state.batchTravel.total - this.state.batchTravel.remaining,
+    };
+  }
+
   startTravel() {
     if (!this.canTravel()) return false;
     this.refreshActivity();
@@ -393,6 +483,13 @@ class GameEngine {
     this.state.journey.currentEvent = event;
     this.state.journey.eventTriggeredThisRound.push(event.id);
     this.addLog(LOG_TEMPLATES.travelEnd_event, 'info');
+
+    // 批量出发模式：跳过事件展示，直接自动选第一个选项
+    if (this.isBatchTravelActive() && event && event.options && event.options.length > 0) {
+      this.resolveEvent(0);
+      return;
+    }
+
     this.emit('eventTriggered', event);
     this.state.journey.active = false;
   }
@@ -550,7 +647,36 @@ class GameEngine {
     this.checkAchievements();
     this.emit('eventResolved', results);
     this.autoSave();
+    // 批量出发模式：自动开始下一次旅行
+    this._continueBatchIfNeeded();
     return results;
+  }
+
+  /** 批量出发连续推进（在 resolveEvent 与 resolveEventWithItem 末尾调用） */
+  _continueBatchIfNeeded() {
+    if (!this.isBatchTravelActive()) return;
+    this.state.batchTravel.remaining--;
+    if (this.state.batchTravel.remaining <= 0) {
+      const done = this.state.batchTravel.total;
+      this.state.batchTravel.total = 0;
+      this.addLog(`✅ 自动出发完成（${done} 次）`, 'success');
+      this.emit('batchTravelDone', { total: done });
+      return;
+    }
+    if (!this.canTravel()) {
+      const done = this.state.batchTravel.total - this.state.batchTravel.remaining;
+      this.state.batchTravel.remaining = 0;
+      this.state.batchTravel.total = 0;
+      this.addLog(`⏹ 精力/体力不足，自动出发中断（已完成 ${done} 次）`, 'warning');
+      this.emit('batchTravelStop', { stopped: done, reason: 'cannot_travel' });
+      return;
+    }
+    // 用 setTimeout 让 UI 先把 eventResolved 的渲染提交，再触发下一次 travelStart
+    setTimeout(() => {
+      // 用户可能中途已停止
+      if (!this.isBatchTravelActive()) return;
+      this.startTravel();
+    }, 50);
   }
 
   /** 使用道具处理事件（C选项） */
@@ -617,6 +743,8 @@ class GameEngine {
     this.state.journey.currentEvent = null;
     this.emit('eventResolved', results);
     this.autoSave();
+    // 批量出发模式：自动开始下一次旅行
+    this._continueBatchIfNeeded();
     return results;
   }
 
@@ -921,11 +1049,14 @@ class GameEngine {
       this.expandBackpack();
       return true;
     }
-    // 永久道具直接生效
+    // 永久道具直接生效 — 修复：先查重再 apply，避免通过 addItem 路径（事件/聚宝阁/对话等）重复获得时 staminaMaxBonus 溢出累加
     if (def.type === 'permanent') {
+      if (this.state.backpack.purchasedPermanents.includes(itemId) && def.maxPurchase === 1) {
+        // 已持有且为限量道具，吞掉这次"重复获得"（不重复生效，不入背包）
+        return true;
+      }
       this.applyPermanentItem(itemId);
-      if (!this.state.backpack.purchasedPermanents.includes(itemId))
-        this.state.backpack.purchasedPermanents.push(itemId);
+      this.state.backpack.purchasedPermanents.push(itemId);
       this.addLog(`🔮 获得永久道具：${def.icon} ${def.name}！`, 'success');
       this.emit('backpackChange');
       return true;
@@ -1114,7 +1245,7 @@ class GameEngine {
     };
     this.state.meta.staminaZeroCount = 0;
     this.state.commodities = {}; // 清空囤货
-    this.state.heishi = { goods: [], prices: {}, lastRefreshTimestamp: 0, lastRefreshStep: 0 }; // 重置黑市
+    this.state.heishi = { goods: [], prices: {}, lastRefreshTimestamp: 0, lastRefreshStep: 0, purchaseCount: 0 }; // 重置黑市
     this.state.saltFields = []; // 重置盐场
     this.state.milestones = []; // 重置里程碑
     this.state.dufangAntiAddiction = { dailyLoss: 0, consecutiveLosses: 0, cooldownUntil: 0, date: '' }; // 重置防沉迷
@@ -1408,12 +1539,16 @@ class GameEngine {
   }
 
   exportSave() {
-    try { return btoa(JSON.stringify(this.getSaveData())); } catch (e) { return null; }
+    try {
+      // Unicode 安全 base64：btoa 不支持中文，必须先 UTF-8 编码
+      return btoa(unescape(encodeURIComponent(JSON.stringify(this.getSaveData()))));
+    } catch (e) { return null; }
   }
 
   importSave(base64) {
     try {
-      const d = JSON.parse(atob(base64));
+      const json = decodeURIComponent(escape(atob(base64)));
+      const d = JSON.parse(json);
       if (!d || !d.version) return false;
       this.state.resources = { ...this.state.resources, ...d.resources };
       this.state.energy = { ...this.state.energy, ...d.energy };
@@ -1803,7 +1938,8 @@ class GameEngine {
     let pityBonus = 0;
     const pityThreshold = DUFANG_CONFIG.stone.pityThreshold;
     const pityPct = DUFANG_CONFIG.stone.pityBonus;
-    if (this.state.daily.dufangStonePity >= pityThreshold) {
+    const pityActive = this.state.daily.dufangStonePity >= pityThreshold;
+    if (pityActive) {
       pityBonus = pityPct;
       this.addLog(LOG_TEMPLATES.dufangStonePity.replace('{count}', this.state.daily.dufangStonePity), 'success');
     }
@@ -1813,13 +1949,19 @@ class GameEngine {
       qualityMod += 0.05;
     }
     // 加权随机
+    // 保底触发时，池子收紧到稀有玉及以上（{稀有, 极品, 传说}）：
+    //   - 排除废料/普通玉/良品玉，杜绝「pity 还出 1× 良品」的不爽体验；
+    //   - +25% 保底加成仍加到这三档上，让稀有玉最常见。
     const qualityLevels = qualityTable.map(q => q.id);
+    const rareIdx = qualityLevels.indexOf('rare');
     const goodIdx = qualityLevels.indexOf('good');
     const roll = Math.random();
     let cumulative = 0;
     let selectedQuality = qualityTable[0];
     for (let i = 0; i < qualityTable.length; i++) {
       const q = qualityTable[i];
+      // 保底激活时跳过低于稀有的品质（包括废料/普通玉/良品玉）
+      if (pityActive && rareIdx >= 0 && i < rareIdx) continue;
       let adjustedChance = q.chance;
       if (q.id !== 'waste') adjustedChance += qualityMod;
       // 保底bonus只加到good及以上品质，避免膨胀低品质概率
@@ -1827,6 +1969,8 @@ class GameEngine {
       cumulative += adjustedChance;
       if (roll < cumulative) { selectedQuality = q; break; }
     }
+    // 兜底：极端情况下（如概率全为0）保证至少有结果
+    if (cumulative === 0) selectedQuality = qualityTable[Math.max(0, rareIdx)];
     // 判断是否为good及以上
     const selectedIdx = qualityLevels.indexOf(selectedQuality.id);
     if (selectedIdx < goodIdx) {
@@ -2083,9 +2227,21 @@ class GameEngine {
     for (const g of goods) { this.state.heishi.prices[g.id] = g.currentPrice; }
     this.state.heishi.lastRefreshStep = this.state.meta.totalTravels;
     this.state.heishi.lastRefreshTimestamp = Date.now();
+    this.state.heishi.purchaseCount = 0; // 每次刷新重置购买计数
     this.addLog(LOG_TEMPLATES.heishiRefresh, 'info');
     this.emit('heishiRefreshed', goods);
     this.autoSave();
+  }
+
+  /** 强制刷新黑市商品（5000银两/次） */
+  forceRefreshHeishi() {
+    if (this.state.resources.silver < HEISHI_CONFIG.forceRefreshCost) {
+      return { success: false, reason: 'no_silver', msg: '银两不足，无法强制刷新' };
+    }
+    this.state.resources.silver -= HEISHI_CONFIG.forceRefreshCost;
+    this.refreshHeishi();
+    this.addLog(`💰 强制刷新黑市商品（-${HEISHI_CONFIG.forceRefreshCost.toLocaleString()}🪙）`, 'info');
+    return { success: true };
   }
 
   getHeishiGoods() {
@@ -2103,7 +2259,9 @@ class GameEngine {
   enterHeishi() {
     if (!this.hasItem('heishiling')) return { success: false, reason: 'no_token', msg: LOG_TEMPLATES.heishiNoToken };
     this.removeItem('heishiling', 1);
-    // 查抄判定 — v2.4 御前圣令免疫查封
+    // 每个黑市令对应一次进入 + 商品自动刷新（新黑市令=新商品）
+    this.refreshHeishi();
+    // 查抄判定 — 进入时固定 5%；购买时另按购买次数累加
     let inspected = false, loss = 0, repGain = 0, decreeBlocked = false;
     if (Math.random() < HEISHI_CONFIG.inspectRate) {
       if (this.checkConfiscationImmunity()) {
@@ -2120,7 +2278,6 @@ class GameEngine {
     } else {
       this.addLog(LOG_TEMPLATES.heishiEnter, 'info');
     }
-    if (this.state.heishi.goods.length === 0) this.refreshHeishi();
     this.emit('heishiEnter', { inspected, loss, repGain, decreeBlocked });
     this.autoSave();
     return { success: true, inspected, loss, repGain, decreeBlocked };
@@ -2134,13 +2291,32 @@ class GameEngine {
     if (good.itemReward) {
       this.addItem(good.itemReward.id, good.itemReward.qty);
     }
+    // 每次购买都触发查抄判定，概率按当前购买次数累加
+    const prevCount = this.state.heishi.purchaseCount || 0;
+    const chashaoChance = Math.min(1.0, HEISHI_CONFIG.inspectRate + prevCount * HEISHI_CONFIG.purchaseInspectStep);
+    let inspected = false, loss = 0, repGain = 0, decreeBlocked = false;
+    if (Math.random() < chashaoChance) {
+      if (this.checkConfiscationImmunity()) {
+        decreeBlocked = true;
+        this.addLog(LOG_TEMPLATES.auctionImperialDecreeBlock, 'success');
+      } else {
+        inspected = true;
+        loss = Math.floor(this.state.resources.silver * HEISHI_CONFIG.inspectSilverLoss);
+        repGain = HEISHI_CONFIG.inspectReputationBonus;
+        this.state.resources.silver -= loss;
+        this.modifyResource('reputation', repGain);
+        const pct = Math.round(chashaoChance * 100);
+        this.addLog(`⚠️ 第${prevCount + 1}件购买触发查抄（${pct}%）！损失 ${loss.toLocaleString()} 两，声望+${repGain}`, 'danger');
+      }
+    }
+    this.state.heishi.purchaseCount = prevCount + 1;
     this.addLog(LOG_TEMPLATES.heishiBuy.replace('{icon}', good.icon).replace('{name}', good.name).replace('{cost}', good.currentPrice), 'success');
     // 移除已购买商品
     this.state.heishi.goods = this.state.heishi.goods.filter(g => g.id !== goodId);
     delete this.state.heishi.prices[goodId];
-    this.emit('heishiGoodBought', { goodId, good });
+    this.emit('heishiGoodBought', { goodId, good, inspected, loss, decreeBlocked, chashaoChance });
     this.autoSave();
-    return { success: true, good };
+    return { success: true, good, inspected, loss, chashaoChance };
   }
 
   // ==================== 离线收益 ====================
@@ -2250,7 +2426,8 @@ class GameEngine {
     const stepsSince = totalSteps - (this.state.auction.lastRefreshStep || 0);
     const stepsLeft = Math.max(0, stepsNeeded - stepsSince);
     return {
-      unlocked: this.state.auction.unlocked,
+      // 同时以声望条件兜底，避免 unlock 标志与现实状态不一致导致点不进去
+      unlocked: this.state.auction.unlocked || this.state.resources.reputation >= AUCTION_CONFIG.unlockReputation,
       stepsLeft,
       stepsNeeded,
       nextRefreshStr: stepsLeft > 0 ? `${stepsLeft}步` : '即将刷新',

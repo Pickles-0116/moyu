@@ -27,6 +27,7 @@ class GameUI {
       app: document.getElementById('app'),
       eventArea: document.getElementById('eventArea'),
       travelBtn: document.getElementById('travelBtn'),
+      fastTravelBtn: document.getElementById('fastTravelBtn'),
       resourcePanel: document.getElementById('resourcePanel'),
       energyBar: document.getElementById('energyBar'),
       energyText: document.getElementById('energyText'),
@@ -61,8 +62,22 @@ class GameUI {
     this.el.travelBtn.addEventListener('click', (e) => {
       this.createRipple(e);
       if (this.tutorialActive && this.tutorialStep === 1) this.nextTutorialStep();
+      // 批量出发模式：点一次跑 10 次，事件自动选 A
+      if (this.game.isBatchTravelActive()) {
+        this.game.stopBatchTravel();
+        return;
+      }
       this.game.startTravel();
     });
+    if (this.el.fastTravelBtn) {
+      this.el.fastTravelBtn.addEventListener('click', (e) => {
+        this.createRipple(e);
+        const result = this.game.startFastTravel();
+        if (!result.success) { alert(result.msg); return; }
+        this.renderResources();
+        this.updateFastTravelButton();
+      });
+    }
     this.el.bossKeyBtn.addEventListener('click', () => this.game.toggleDisguise());
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && !this.activePanel) { e.preventDefault(); this.game.toggleDisguise(); }
@@ -119,8 +134,11 @@ class GameUI {
   // ==================== 游戏事件监听 ====================
   bindGameEvents() {
     this.game.on('resourceChange', (data) => { this.renderResources(); this.showFloatText(data); this.updateTravelButton(); });
-    this.game.on('energyChange', () => { this.renderEnergy(); this.updateTravelButton(); });
+    this.game.on('energyChange', () => { this.renderEnergy(); this.updateTravelButton(); this.updateFastTravelButton(); });
     this.game.on('travelStart', () => { this.renderTravelProgress(); this.updateTravelButton(); });
+    this.game.on('batchTravelStart', () => this.updateTravelButton());
+    this.game.on('batchTravelStop', () => this.updateTravelButton());
+    this.game.on('batchTravelDone', () => this.updateTravelButton());
     this.game.on('travelProgress', (p) => this.updateProgressBar(p));
     this.game.on('eventTriggered', (e) => this.renderEvent(e));
     this.game.on('eventResolved', (r) => { this.renderEventResolved(r); this.renderResources(); this.renderShops(); this.updateTravelButton(); });
@@ -133,9 +151,9 @@ class GameUI {
     this.game.on('offlineEarnings', (d) => this.showOfflineEarnings(d));
     this.game.on('tutorialNeeded', () => this.startTutorial());
     this.game.on('tutorialSkipped', () => {});  // 预留
-    this.game.on('backpackChange', () => { this.renderBackpack(); this.renderQuickSlots(); });
-    this.game.on('itemUsed', () => { this.renderBackpack(); this.renderQuickSlots(); this.renderResources(); });
-    this.game.on('itemPurchased', () => { this.renderBackpack(); this.renderQuickSlots(); this.renderResources(); this.renderShops(); });
+    this.game.on('backpackChange', () => { this.renderBackpack(); this.renderQuickSlots(); this.updateFastTravelButton(); });
+    this.game.on('itemUsed', () => { this.renderBackpack(); this.renderQuickSlots(); this.renderResources(); this.updateFastTravelButton(); });
+    this.game.on('itemPurchased', () => { this.renderBackpack(); this.renderQuickSlots(); this.renderResources(); this.renderShops(); this.updateFastTravelButton(); });
     this.game.on('prestigeComplete', () => { this.renderAll(); this.closePanel(); });
     this.game.on('dailyRewardClaimed', () => this.renderDaily());
     this.game.on('marketRefreshed', () => { if (this.activePanel === 'market') this.renderMarket(); });
@@ -165,7 +183,7 @@ class GameUI {
     this.game.on('auctionUnlocked', () => { this.renderResources(); this.renderOuting(); });
     this.game.on('auctionRefreshed', () => { if (this.activePanel === 'auction') this.renderAuction(); });
     this.game.on('auctionItemBought', () => { this.renderResources(); if (this.activePanel === 'auction') this.renderAuction(); });
-    this.game.on('auctionHeishiBought', () => { this.renderResources(); this.renderBackpack(); if (this.activePanel === 'auction') this.renderAuction(); });
+    this.game.on('auctionHeishiBought', () => { this.renderResources(); if (this.activePanel === 'auction') this.renderAuction(); });
     this.game.on('protectionUsed', (d) => { this.renderResources(); this.renderBackpack(); });
     setInterval(() => {
       if (this.activePanel) return; // 弹窗打开时跳过，避免 backdrop-filter 重算导致闪烁
@@ -313,6 +331,7 @@ class GameUI {
     this.renderQuickSlots();
     this.renderLogs();
     this.updateTravelButton();
+    this.updateFastTravelButton();
     this.renderIdle();
   }
 
@@ -514,8 +533,8 @@ class GameUI {
   resolveEventWithItem() { this.game.resolveEventWithItem(); }
   renderEventResolved(results) {
     if (!results || !results.formattedText) { this.renderIdle(); return; }
-    // v2.1: 事件跳转到地点
-    if (results.jumpTo) {
+    // v2.1: 事件跳转到地点（批量出发模式抑制跳转，避免打断 10 次行进节奏）
+    if (results.jumpTo && !this.game.isBatchTravelActive()) {
       setTimeout(() => {
         this.togglePanel('outing');
         // 嵌套地域跳转 —— 需要等 outing 渲染后再进入
@@ -548,6 +567,15 @@ class GameUI {
   updateTravelButton() {
     const btn = this.el.travelBtn;
     const canTravel = this.game.canTravel();
+    // 批量出发激活时，按钮变为「停止」并保留可点击（不受精力影响）
+    if (this.game.isBatchTravelActive()) {
+      const info = this.game.getBatchTravelInfo();
+      btn.disabled = false;
+      btn.textContent = `⏹ 停止自动 (${info.done}/${info.total})`;
+      btn.classList.add('batch-active');
+      return;
+    }
+    btn.classList.remove('batch-active');
     btn.disabled = !canTravel;
     if (!canTravel) {
       const energy = this.game.getEnergyStatus();
@@ -555,6 +583,26 @@ class GameUI {
       else if (this.game.state.resources.stamina <= 0) btn.textContent = '体力耗尽，本轮结束';
       else if (this.game.state.journey.active) btn.textContent = '行进中...';
     } else { btn.textContent = '🚩 出发经商'; }
+  }
+
+  // --- 快速行商按钮（御赐商牌专属） ---
+  updateFastTravelButton() {
+    if (!this.el.fastTravelBtn) return;
+    const can = this.game.canFastTravel();
+    const owned = this.game.state.backpack.purchasedPermanents.includes('yucishangpai');
+    if (!owned) {
+      this.el.fastTravelBtn.disabled = true;
+      this.el.fastTravelBtn.textContent = '⚡ 行商×10 (需御赐商牌)';
+      this.el.fastTravelBtn.title = '需持有「御赐商牌」才能快速行商';
+    } else if (!can.ok) {
+      this.el.fastTravelBtn.disabled = true;
+      this.el.fastTravelBtn.textContent = `⚡ 行商×10 (${can.msg})`;
+      this.el.fastTravelBtn.title = can.msg;
+    } else {
+      this.el.fastTravelBtn.disabled = false;
+      this.el.fastTravelBtn.textContent = '⚡ 行商×10';
+      this.el.fastTravelBtn.title = '一次性行商10次，加速商情/黑市/拍卖场刷新';
+    }
   }
 
   // --- 快捷栏 ---
@@ -994,8 +1042,13 @@ class GameUI {
   renderHeishi() {
     const goods = this.game.getHeishiGoods();
     const refreshInfo = this.game.getHeishiRefreshInfo();
+    const purchaseCount = this.game.state.heishi.purchaseCount || 0;
+    const nextChashaoPct = Math.min(100, Math.round((0.05 + purchaseCount * 0.10) * 100));
     let html = `<div class="panel-card"><div class="panel-header"><h3>🌑 地下黑市</h3><button class="panel-close" onclick="window.gameUI.renderOuting()">← 返回</button></div>`;
-    html += `<div class="heishi-info">⏱️ 下次刷新：${refreshInfo.nextRefreshStr}后（每${refreshInfo.stepsNeeded}步） | 黑市令持有：${this.game.getItemCount('heishiling')}个 | <span class="heishi-warning">⚠️ 5%查抄风险</span></div>`;
+    html += `<div class="heishi-info">⏱️ 下次刷新：${refreshInfo.nextRefreshStr}后（每${refreshInfo.stepsNeeded}步） | 黑市令持有：${this.game.getItemCount('heishiling')}个 | <span class="heishi-warning">⚠️ 下次购买查抄风险：${nextChashaoPct}%${purchaseCount > 0 ? ` (本轮已购 ${purchaseCount} 件)` : ''}</span></div>`;
+    // 强制刷新按钮
+    const canRefresh = this.game.getResource('silver') >= HEISHI_CONFIG.forceRefreshCost;
+    html += `<div class="heishi-actions"><button class="btn-sm warning" ${!canRefresh ? 'disabled' : ''} onclick="window.gameUI.forceRefreshHeishiUI()">💰 强制刷新商品 (${HEISHI_CONFIG.forceRefreshCost.toLocaleString()}🪙)</button></div>`;
     if (goods.length === 0) {
       html += '<div class="heishi-empty">今日黑市暂无可售货物，等待刷新...</div>';
     } else {
@@ -1009,6 +1062,12 @@ class GameUI {
     }
     html += '</div>';
     this.el.modalContent.innerHTML = html;
+  }
+  forceRefreshHeishiUI() {
+    const result = this.game.forceRefreshHeishi();
+    if (!result.success) { alert(result.msg); return; }
+    this.renderHeishi();
+    this.renderResources();
   }
   buyHeishiGoodUI(goodId) {
     const result = this.game.buyHeishiGood(goodId);
@@ -1168,7 +1227,7 @@ class GameUI {
     html += `<div class="auction-force-refresh"><div class="afr-info">强制刷新：${AUCTION_CONFIG.forceRefreshCost.toLocaleString()}🪙 · 今日剩余 ${frLeft}/${info.forceRefreshMax} 次</div><button class="btn-sm ${frLeft > 0 ? 'warning' : ''}" ${frLeft <= 0 ? 'disabled' : ''} onclick="window.gameUI.forceRefreshAuctionUI()">💰 强制刷新</button></div>`;
     html += `</div></div>`;
     this.activePanel = 'auction';
-    this.el.panel.innerHTML = html;
+    this.el.modalContent.innerHTML = html;
   }
 
   buyAuctionItemUI(idx) {
@@ -1199,7 +1258,6 @@ class GameUI {
     }
     this.renderAuction();
     this.renderResources();
-    this.renderBackpack();
   }
 
   // --- v2.2 里程碑庆典弹窗 ---
@@ -1294,7 +1352,15 @@ class GameUI {
       } else {
         html += `<span class="muted" style="font-size:0.8rem;">持仓已满</span>`;
       }
-      html += `<button class="btn-sm gold" onclick="window.gameUI.sellCommodityUI('${gid}')" ${hold <= 0 ? 'disabled' : ''} title="卖出1个">卖出</button>`;
+      if (hold > 0) {
+        html += `<input type="number" id="sellQty_${gid}" value="1" min="1" max="${hold}" style="width:48px;text-align:center;font-size:0.85rem;padding:4px 2px;border:1px solid var(--ink-light);border-radius:6px;background:var(--bg-panel);color:var(--ink-primary);margin-left:6px;margin-right:4px;" title="输入卖出数量">`;
+        html += `<button class="btn-sm gold" onclick="window.gameUI.sellCommodityUI('${gid}')" title="卖出指定数量">卖出</button>`;
+        if (hold > 1) {
+          html += `<button class="btn-sm gold" onclick="window.gameUI.sellCommodityUI('${gid}', ${hold})" title="全部卖出" style="margin-left:2px;">全出</button>`;
+        }
+      } else {
+        html += `<button class="btn-sm gold" disabled title="无持仓">卖出</button>`;
+      }
       html += `</span></div>`;
     }
 
@@ -1330,8 +1396,13 @@ class GameUI {
       else if (result.reason === 'full') alert(result.msg);
     }
   }
-  sellCommodityUI(goodId) {
-    const result = this.game.sellCommodity(goodId, 1);
+  sellCommodityUI(goodId, qty) {
+    let amount = qty;
+    if (amount === undefined || amount === null) {
+      const qtyInput = document.getElementById(`sellQty_${goodId}`);
+      amount = qtyInput ? (parseInt(qtyInput.value) || 1) : 1;
+    }
+    const result = this.game.sellCommodity(goodId, amount);
     if (!result.success) {
       if (result.reason === 'no_commodity') alert('库存不足！');
     }
@@ -1403,11 +1474,28 @@ class GameUI {
   setDisguiseType(type) { this.game.setDisguiseType(type); this.renderSettings(); }
   exportSave() {
     const data = this.game.exportSave();
-    if (data) {
-      navigator.clipboard.writeText(data).then(() => alert('存档已复制到剪贴板！')).catch(() => {
-        const ta = document.createElement('textarea'); ta.value = data; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); alert('存档已复制到剪贴板！');
-      });
+    if (!data) { alert('导出失败：存档数据为空！'); return; }
+    // 仅在安全上下文（HTTPS/localhost）下 navigator.clipboard 才存在，
+    // 从 file:// 打开时它是 undefined，直接访问 .writeText 会同步抛 TypeError，
+    // .catch() 接不到，整条导出路径静默失败。
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(data)
+        .then(() => alert('存档已复制到剪贴板！'))
+        .catch(() => this.showExportDataModal(data, true));
+      return;
     }
+    // file:// 等不安全上下文：直接展示存档数据让玩家手动复制
+    this.showExportDataModal(data, false);
+  }
+  showExportDataModal(data, attemptedClipboard) {
+    const html = `<div class="panel-card"><div class="panel-header"><h3>📤 导出存档</h3><button class="panel-close" onclick="window.gameUI.closePanel()">×</button></div>`
+      + `<p style="margin:8px 0;color:var(--ink-muted);font-size:0.9rem;">${attemptedClipboard ? '剪贴板写入失败，请手动复制下方文本：' : '当前环境不支持自动复制，请手动复制下方文本：'}</p>`
+      + `<textarea id="exportSaveText" readonly style="width:100%;height:180px;font-family:monospace;font-size:0.78rem;padding:8px;border:1px solid var(--ink-light);border-radius:6px;background:var(--bg-panel);color:var(--ink-primary);resize:vertical;word-break:break-all;" onclick="this.select();">${data.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>`
+      + `<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">`
+      + `<button class="btn-sm primary" onclick="(function(){const t=document.getElementById('exportSaveText');t.select();try{document.execCommand('copy');alert('已尝试复制，请检查剪贴板');}catch(e){alert('请按 Ctrl/⌘+C 复制');}})()">📋 一键复制</button>`
+      + `<button class="btn-sm" onclick="window.gameUI.closePanel()">关闭</button>`
+      + `</div></div>`;
+    this.el.modalContent.innerHTML = html;
   }
   showImportPrompt() {
     const data = prompt('请粘贴存档码：');

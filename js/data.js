@@ -93,6 +93,13 @@ const GAME_CONFIG = {
   heishiInspectRate: 0.05, // 查抄概率5%
 };
 
+// ==================== 快速行商（御赐商牌专属） ====================
+const FAST_TRAVEL_CONFIG = {
+  count: 10,                  // 一次行商10次
+  energyCost: 10,             // 一次性扣10点精力（按比例：10次×1精力/次）
+  requiredPermanent: 'yucishangpai', // 需要持有御赐商牌
+};
+
 // ==================== v2.2 步数刷新配置 ====================
 // 根据声望区间决定商情/黑市刷新间隔步数
 const MARKET_REFRESH_STEPS = [
@@ -443,16 +450,16 @@ const HEISHI_GOODS = [
   { id:'heishi_t1d', tier:1, name:'急行令×5', icon:'📜', basePrice:1800, chance:0.10, itemReward:{id:'jixingling',qty:5} },
   { id:'heishi_t1e', tier:1, name:'人参×3', icon:'🌿', basePrice:1300, chance:0.10, itemReward:{id:'renshen',qty:3} },
   // T2 稀有 (30%) — 永久道具、黑市原石 (需 Prestige≥1)
-  { id:'heishi_t2a', tier:2, name:'千年人参', icon:'🫚', basePrice:5000, chance:0.08, itemReward:{id:'qiannianrenshen',qty:1}, needPrestige:1 },
-  { id:'heishi_t2b', tier:2, name:'聚气丹', icon:'🔮', basePrice:4000, chance:0.08, itemReward:{id:'juqidan',qty:1}, needPrestige:1 },
-  { id:'heishi_t2c', tier:2, name:'商路通牒', icon:'📋', basePrice:6000, chance:0.07, itemReward:{id:'shanglutongdie',qty:1}, needPrestige:1 },
-  { id:'heishi_t2d', tier:2, name:'黑市原石', icon:'💎', basePrice:3000, chance:0.07, itemReward:{id:'heishi_yuanshi',qty:1}, needPrestige:1 },
-  // T3 传说 (8%) — Prestige加成道具 (需 Prestige≥3)
-  { id:'heishi_t3a', tier:3, name:'雪山参王', icon:'🏔️', basePrice:30000, chance:0.04, itemReward:{id:'xueshanshenwang',qty:1}, needPrestige:3 },
-  { id:'heishi_t3b', tier:3, name:'天元丹', icon:'💠', basePrice:25000, chance:0.04, itemReward:{id:'tianyuandan',qty:1}, needPrestige:3 },
-  // T4 神器 (2%) — 限定道具 (需 Prestige≥5)
-  { id:'heishi_t4a', tier:4, name:'御赐商牌', icon:'🏅', basePrice:80000, chance:0.01, itemReward:{id:'yucishangpai',qty:1}, needPrestige:5 },
-  { id:'heishi_t4b', tier:4, name:'黑市原石(传说)', icon:'🔮', basePrice:50000, chance:0.01, itemReward:{id:'heishi_yuanshi_legend',qty:1}, needPrestige:5 },
+  { id:'heishi_t2a', tier:2, name:'千年人参', icon:'🫚', basePrice:5000, chance:0.08, itemReward:{id:'qiannianrenshen',qty:1} },
+  { id:'heishi_t2b', tier:2, name:'聚气丹', icon:'🔮', basePrice:4000, chance:0.08, itemReward:{id:'juqidan',qty:1} },
+  { id:'heishi_t2c', tier:2, name:'商路通牒', icon:'📋', basePrice:6000, chance:0.07, itemReward:{id:'shanglutongdie',qty:1} },
+  { id:'heishi_t2d', tier:2, name:'黑市原石', icon:'💎', basePrice:3000, chance:0.07, itemReward:{id:'heishi_yuanshi',qty:1} },
+  // T3 传说 (8%) — Prestige加成道具（原需 Prestige≥3，现全时段可见）
+  { id:'heishi_t3a', tier:3, name:'雪山参王', icon:'🏔️', basePrice:30000, chance:0.04, itemReward:{id:'xueshanshenwang',qty:1} },
+  { id:'heishi_t3b', tier:3, name:'天元丹', icon:'💠', basePrice:25000, chance:0.04, itemReward:{id:'tianyuandan',qty:1} },
+  // T4 神器 (2%) — 限定道具（原需 Prestige≥5，现全时段可见）
+  { id:'heishi_t4a', tier:4, name:'御赐商牌', icon:'🏅', basePrice:80000, chance:0.01, itemReward:{id:'yucishangpai',qty:1} },
+  { id:'heishi_t4b', tier:4, name:'黑市原石(传说)', icon:'🔮', basePrice:50000, chance:0.01, itemReward:{id:'heishi_yuanshi_legend',qty:1} },
 ];
 // ==================== 医馆配置（v2.1） ====================
 const YIGUAN_CONFIG = {
@@ -581,12 +588,14 @@ const QUIZ_POOL = [
 ];
 // ==================== 黑市配置（v2.2 步数刷新） ====================
 const HEISHI_CONFIG = {
-  inspectRate: 0.05, // 查抄率5%
+  inspectRate: 0.05, // 查抄率5%（进入）+ 购买时按购买次数累加
   inspectSilverLoss: 0.3, // 查抄损失30%当前银两
   inspectReputationBonus: 10, // 查抄后声望补偿
   priceMultiplierMin: 0.7, // 动态定价下限
   priceMultiplierMax: 1.5, // 动态定价上限
   slotsPerRefresh: 3, // 每次刷新3件商品
+  forceRefreshCost: 5000, // 强制刷新商品：5000银两
+  purchaseInspectStep: 0.10, // 每购买1件商品，下次查抄率 +10%
 };
 
 // ==================== 盐场投资配置（v2.2） ====================
